@@ -61,14 +61,21 @@ struct PeFile {
     const uint32_t off = static_cast<uint32_t>(std::strtoul(buf + 1, nullptr, 10));
     const uint64_t at = static_cast<uint64_t>(ptr_symtab) + num_symbols * 18ull + off;
     if (at >= data.size()) return std::string(buf);
-    return std::string(reinterpret_cast<const char*>(&data[at]));
+    size_t len = 0;
+    while (len < 4096 && at + len < data.size() && data[static_cast<size_t>(at) + len] != 0) {
+      ++len;
+    }
+    return std::string(reinterpret_cast<const char*>(&data[at]), len);
   }
 
   bool parse(std::string* err) {
     if (data.size() < 0x40) { *err = "file too small"; return false; }
     if (data[0] != 'M' || data[1] != 'Z') { *err = "missing MZ signature"; return false; }
     pe_off = rd32(&data[0x3C]);
-    if (pe_off + 24 > data.size()) { *err = "invalid PE offset"; return false; }
+    if (static_cast<uint64_t>(pe_off) + 24u > data.size()) {
+      *err = "invalid PE offset";
+      return false;
+    }
     if (data[pe_off] != 'P' || data[pe_off + 1] != 'E' || data[pe_off + 2] != 0) {
       *err = "missing PE signature";
       return false;
@@ -81,6 +88,10 @@ struct PeFile {
     opt_off = cof_off + 20;
     sect_off = opt_off + opt_size;
 
+    if (static_cast<uint64_t>(opt_off) + 112u > data.size()) {
+      *err = "optional header outside file";
+      return false;
+    }
     const uint16_t magic = rd16(&data[opt_off]);
     if (magic != 0x20B) { *err = "only PE32+ (x86-64) is supported"; return false; }
 
@@ -91,11 +102,16 @@ struct PeFile {
     size_of_headers = rd32(&data[opt_off + 60]);
     num_dirs = rd32(&data[opt_off + 108]);
     if (num_dirs > 0) {
+      if (static_cast<uint64_t>(opt_off) + 120u > data.size()) {
+        *err = "data directories outside file";
+        return false;
+      }
       export_rva = rd32(&data[opt_off + 112]);
       export_size = rd32(&data[opt_off + 116]);
     }
 
-    if (sect_off + static_cast<uint32_t>(num_sections) * 40 > data.size()) {
+    if (static_cast<uint64_t>(sect_off) +
+            static_cast<uint64_t>(num_sections) * 40u > data.size()) {
       *err = "section table outside file";
       return false;
     }
@@ -118,7 +134,10 @@ struct PeFile {
     for (size_t i = 0; i < sections.size(); ++i) {
       const Section& s = sections[i];
       const uint32_t sz = s.virt_size ? s.virt_size : s.raw_size;
-      if (rva >= s.virt_addr && rva < s.virt_addr + sz) return static_cast<int>(i);
+      const uint64_t end = static_cast<uint64_t>(s.virt_addr) + sz;
+      if (rva >= s.virt_addr && static_cast<uint64_t>(rva) < end) {
+        return static_cast<int>(i);
+      }
     }
     return -1;
   }
@@ -134,11 +153,17 @@ struct PeFile {
 
   uint32_t dir_rva(unsigned i) const {
     if (i >= num_dirs) return 0;
-    return rd32(&data[opt_off + 112 + i * 8]);
+    const uint64_t off = static_cast<uint64_t>(opt_off) + 112u +
+                         static_cast<uint64_t>(i) * 8u;
+    if (off + 4u > data.size()) return 0;
+    return rd32(&data[off]);
   }
   uint32_t dir_size(unsigned i) const {
     if (i >= num_dirs) return 0;
-    return rd32(&data[opt_off + 112 + i * 8 + 4]);
+    const uint64_t off = static_cast<uint64_t>(opt_off) + 112u +
+                         static_cast<uint64_t>(i) * 8u + 4u;
+    if (off + 4u > data.size()) return 0;
+    return rd32(&data[off]);
   }
 
   std::vector<ImportInfo> parse_imports(std::string* err) const {
@@ -161,7 +186,12 @@ struct PeFile {
       if (noff >= 0) {
         const char* s = reinterpret_cast<const char*>(&data[noff]);
         size_t len = 0;
-        while (len < 128 && s[len] != '\0') ++len;
+        while (len < 128 &&
+               noff + static_cast<int64_t>(len) <
+                   static_cast<int64_t>(data.size()) &&
+               s[len] != '\0') {
+          ++len;
+        }
         dll.assign(s, len);
         dll_len = len + 1;
       }
@@ -203,7 +233,12 @@ struct PeFile {
           info.name_off = hn;
           const char* s = reinterpret_cast<const char*>(&data[hn + 2]);
           size_t len = 0;
-          while (len < 256 && s[len] != '\0') ++len;
+          while (len < 256 &&
+                 hn + 2 + static_cast<int64_t>(len) <
+                     static_cast<int64_t>(data.size()) &&
+                 s[len] != '\0') {
+            ++len;
+          }
           if (len == 0) continue;
           info.func.assign(s, len);
         }
@@ -217,6 +252,10 @@ struct PeFile {
     if (export_rva == 0) { *err = "no export directory"; return 0; }
     const int64_t d = rva_to_off(export_rva);
     if (d < 0) { *err = "cannot parse export directory"; return 0; }
+    if (d + 40 > static_cast<int64_t>(data.size())) {
+      *err = "export directory outside file";
+      return 0;
+    }
     const uint8_t* dir = &data[d];
     const uint32_t num_names = rd32(dir + 24);
     const uint32_t eat_rva = rd32(dir + 28);
@@ -227,13 +266,38 @@ struct PeFile {
     const int64_t ords = rva_to_off(ords_rva);
     if (eat < 0 || names < 0 || ords < 0) { *err = "cannot parse export tables"; return 0; }
 
+    const size_t want = std::strlen(name);
     for (uint32_t i = 0; i < num_names; ++i) {
+      if (names + static_cast<int64_t>(i) * 4 + 4 >
+          static_cast<int64_t>(data.size())) {
+        break;
+      }
       const uint32_t nrva = rd32(&data[names + i * 4]);
       const int64_t noff = rva_to_off(nrva);
       if (noff < 0) continue;
-      if (std::strcmp(reinterpret_cast<const char*>(&data[noff]), name) != 0) continue;
+
+      size_t k = 0;
+      while (k < want &&
+             noff + static_cast<int64_t>(k) < static_cast<int64_t>(data.size()) &&
+             data[noff + k] != 0) {
+        if (data[noff + k] != static_cast<uint8_t>(name[k])) break;
+        ++k;
+      }
+      if (k != want) continue;
+      if (noff + static_cast<int64_t>(want) >= static_cast<int64_t>(data.size()) ||
+          data[noff + want] != 0) {
+        continue;
+      }
+
+      if (ords + static_cast<int64_t>(i) * 2 + 2 >
+          static_cast<int64_t>(data.size())) {
+        break;
+      }
       const uint16_t ord = rd16(&data[ords + i * 2]);
-      return rd32(&data[eat + static_cast<uint32_t>(ord) * 4]);
+      const uint64_t ent =
+          static_cast<uint64_t>(eat) + static_cast<uint64_t>(ord) * 4u;
+      if (ent + 4u > data.size()) return 0;
+      return rd32(&data[ent]);
     }
     *err = std::string("export not found: ") + name;
     return 0;

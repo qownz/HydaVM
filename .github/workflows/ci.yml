@@ -65,3 +65,32 @@ jobs:
 
       - name: Build
         run: cmake --build build-win --parallel
+
+  fuzz:
+    name: Parser fuzzing (libFuzzer)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-fuzz -G Ninja
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DHYDA_BUILD_FUZZERS=ON
+
+      - name: Build
+        run: cmake --build build-fuzz --parallel
+
+      - name: Run fuzzers
+        run: |
+          for f in fuzz_pe fuzz_hydak fuzz_dat fuzz_blob; do
+            echo "== $f =="
+            ./build-fuzz/$f -max_total_time=45 -rss_limit_mb=2048 -error_exitcode=1
+          done
