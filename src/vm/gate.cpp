@@ -244,7 +244,9 @@ bool gate_lock_acquire() {
 }
 }
 
-extern "C" uint32_t hyda_g_island_mut_k = 0xFFFFFFFFu;
+extern "C" {
+uint32_t hyda_g_island_mut_k = 0xFFFFFFFFu;
+}
 
 extern "C" void hyda_gate_island_release(const void* island,
                                          hyda::VMContext* ctx) {

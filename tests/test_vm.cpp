@@ -2900,6 +2900,7 @@ static void test_vreg_perm() {
   for (int i = 0; i < 16; ++i) {
     const int p = vsl(i);
     CHECK_TRUE(p >= 0 && p < 16);
+    if (p < 0 || p >= 16) continue;
     CHECK_TRUE(!seen[p]);
     seen[p] = true;
     if (p != i) moved = true;

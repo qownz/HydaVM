@@ -16,10 +16,11 @@ __attribute__((used)) uint64_t hyda_handler_lo;
 __attribute__((used)) uint64_t hyda_handler_hi;
 }
 
-HYDA_ENTRY hyda::DispatchProfile g_dispatch_profile = {0, 0, 0, 3, 0, 0, 0, 0};
-
-HYDA_ENTRY uint64_t g_vm_seed = hyda::kSeedDefaultMasked();
-HYDA_ENTRY uint64_t g_seed_salt = hyda::kSeedSaltDefault;
+extern "C" {
+HYDA_ENTRY_DATA hyda::DispatchProfile g_dispatch_profile = {0, 0, 0, 3, 0, 0, 0, 0};
+HYDA_ENTRY_DATA uint64_t g_vm_seed = hyda::kSeedDefaultMasked();
+HYDA_ENTRY_DATA uint64_t g_seed_salt = hyda::kSeedSaltDefault;
+}
 
 namespace {
 

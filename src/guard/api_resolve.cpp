@@ -7,9 +7,10 @@
 #include "hyda/guard/hookguard.hpp"
 #include "hyda/guard/integrity.hpp"
 
-extern "C" uint32_t hyda::hyda_g_integrity_rva = 0;
-
-extern "C" uint64_t g_adbg_ntdll_baseline[hyda::HYDA_ADBG_NTDLL_WINDOWS] = {0};
+extern "C" {
+uint32_t hyda::hyda_g_integrity_rva = 0;
+uint64_t g_adbg_ntdll_baseline[hyda::HYDA_ADBG_NTDLL_WINDOWS] = {0};
+}
 
 #if defined(_WIN32)
 
@@ -232,7 +233,8 @@ uint8_t* find_module(uint32_t dll_hash, const void* want_base) {
 
 using LoadLibraryAFn = void*(__stdcall*)(const char*);
 
-size_t to_wide(const char* in, size_t n, wchar_t* out, size_t out_cap) {
+[[maybe_unused]] size_t to_wide(const char* in, size_t n, wchar_t* out,
+                                size_t out_cap) {
   size_t k = 0;
   for (size_t i = 0; i < n && k + 1 < out_cap; ++i) {
     out[k++] = static_cast<wchar_t>(static_cast<unsigned char>(in[i]));
@@ -349,8 +351,9 @@ static int32_t __stdcall adbg_veh(void* ep) {
   if (g_adbg_trap_state != 1) return 0;
   if (ep == nullptr) return 0;
 
-  const uint64_t rec = rd64(reinterpret_cast<const void*>(ep + 0));
-  const uint64_t ctx = rd64(reinterpret_cast<const void*>(ep + 8));
+  const auto* epb = static_cast<const uint8_t*>(ep);
+  const uint64_t rec = rd64(epb);
+  const uint64_t ctx = rd64(epb + 8);
   if (rec == 0 || ctx == 0) return 0;
 
   if (rd32(reinterpret_cast<const void*>(rec + 0)) != 0x80000003u) return 0;
@@ -568,8 +571,10 @@ extern "C" void* hyda_load_dll(const char* name_utf8) {
 
 static uint8_t* g_audit_base = nullptr;
 
-HYDA_ENTRY hyda::AuditPolicy g_audit_policy = {1u, 1u,
-                                              hyda::HYDA_HOOKREF_BATCH, 0u};
+extern "C" {
+HYDA_ENTRY_DATA hyda::AuditPolicy g_audit_policy = {1u, 1u,
+                                                    hyda::HYDA_HOOKREF_BATCH, 0u};
+}
 
 static uint32_t g_audit_tick = 0;
 
@@ -781,7 +786,9 @@ extern "C" int hyda_vm_check_integrity_step(void) {
 
 static uint32_t g_orig_entry_rva = 0;
 
-extern "C" uint8_t* g_orig_entry_va = nullptr;
+extern "C" {
+uint8_t* g_orig_entry_va = nullptr;
+}
 
 extern "C" int hyda_vm_init_imports(uint32_t table_rva) {
   uint8_t* base = find_module(0, reinterpret_cast<const void*>(&hyda_vm_init_imports));

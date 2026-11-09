@@ -590,8 +590,10 @@ HYDA_FN(f_avx256_gate, "hyda_f_avx256_gate") {
 }
 extern "C" char __stop_hyda_f_avx256_gate[];
 
-extern "C" float hyda_mut_c1 = 3.25f;
-extern "C" float hyda_mut_c2 = 1.5f;
+extern "C" {
+float hyda_mut_c1 = 3.25f;
+float hyda_mut_c2 = 1.5f;
+}
 
 HYDA_FN(f_sse_rip, "hyda_f_sse_rip") {
   __asm__("movss hyda_mut_c1(%rip), %xmm0\n"
@@ -679,7 +681,7 @@ HYDA_FN(f_switch, "hyda_f_switch") {
           "ja sw_default\n"
           "lea rax, [rip + sw_tab]\n"
           "jmp qword ptr [rax + rdi*8]\n"
-          ".pushsection .rodata\n"
+          ".pushsection .data\n"
           "sw_tab: .quad sw_0, sw_1, sw_2, sw_3\n"
           ".popsection\n"
           "sw_0: mov rax, 10\n ret\n"

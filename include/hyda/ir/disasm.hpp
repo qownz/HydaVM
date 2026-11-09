@@ -122,6 +122,7 @@ inline void disasm_encrypted(const uint8_t* code, size_t size, uint64_t key,
     if (off + n > size) break;
 
     uint8_t tmp[16] = {};
+    if (n > sizeof(tmp)) break;
     const uint64_t zs = z ^ (static_cast<uint64_t>(slot) * 0x27D4EB2Du);
     uint8_t prev = 0;
     for (unsigned i = 0; i < n; ++i) {
