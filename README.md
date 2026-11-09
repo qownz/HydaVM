@@ -1,6 +1,6 @@
 # HydaVM
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 HydaVM is an x86-64 **virtual-machine based code protector** for Windows PE
 executables and DLLs, in the spirit of Themida, Code Virtualizer and VMProtect.
@@ -170,7 +170,7 @@ All suites pass on Linux, and the Windows suites pass under Wine.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPL-3.0-or-later. Copyright (C) 2026 qownz — see [LICENSE](LICENSE).
 
 ## Responsible use
 
