@@ -11,7 +11,7 @@ endif()
 
 option(HYDA_WARNINGS "Enable high warning level" ON)
 option(HYDA_BUILD_LIFTER "Build the x86 -> VM bytecode lifter" OFF)
-option(HYDA_BUILD_FUZZERS "Build libFuzzer targets (requires clang)" OFF)
+
 
 add_library(hyda_vm STATIC
   src/core/thread.cpp
@@ -154,19 +154,3 @@ if(HYDA_BUILD_LIFTER)
   endif()
 endif()
 
-if(HYDA_BUILD_FUZZERS)
-  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    message(FATAL_ERROR "HYDA_BUILD_FUZZERS requires clang (libFuzzer)")
-  endif()
-  set(HYDA_FUZZ_FLAGS -fsanitize=fuzzer,address,undefined
-      -fno-omit-frame-pointer -g -O1)
-  foreach(tgt fuzz_pe fuzz_hydak fuzz_dat fuzz_blob)
-    add_executable(${tgt} fuzz/${tgt}.cpp fuzz/fuzz_globals.cpp)
-    target_include_directories(${tgt} PRIVATE
-      "${CMAKE_CURRENT_SOURCE_DIR}/include")
-    target_compile_options(${tgt} PRIVATE ${HYDA_FUZZ_FLAGS})
-    target_link_options(${tgt} PRIVATE ${HYDA_FUZZ_FLAGS})
-  endforeach()
-  target_include_directories(fuzz_pe PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/protect")
-endif()
