@@ -22,6 +22,7 @@ namespace {
 #define HYDA_S2(x) #x
 #define HYDA_S(x) HYDA_S2(x)
 
+static_assert(hyda::kFpYmmOff == 576, "YMM high-half offset changed");
 static_assert(offsetof(hyda::VMContext, r) == 0, "VMContext.r must be at offset 0");
 static_assert(hyda::REG_RSP * 8 == HYDA_OFF_RSP, "REG_RSP offset changed");
 static_assert(hyda::REG_RFLAGS * 8 == HYDA_OFF_FLAGS, "REG_RFLAGS offset changed");
@@ -417,14 +418,25 @@ void hyda_gate_enter_asm(hyda::VMContext* , const void* ) {
       HYDA_SLOT_PUSH
 
       "mov r8, qword ptr [rip + hyda_gate_fp_ptr]\n"
-      "cmp byte ptr [rip + hyda_gate_avx], 0\n"
-      "je Lh_gate_fx_in\n"
-      "xor edx, edx\n"
-      "mov eax, 7\n"
-      "xrstor [r8]\n"
-      "jmp Lh_gate_fp_in_done\n"
-      "Lh_gate_fx_in:\n"
       "fxrstor [r8]\n"
+      "cmp byte ptr [rip + hyda_gate_avx], 0\n"
+      "je Lh_gate_fp_in_done\n"
+      "vinsertf128 ymm0, ymm0, [r8 + 576], 1\n"
+      "vinsertf128 ymm1, ymm1, [r8 + 592], 1\n"
+      "vinsertf128 ymm2, ymm2, [r8 + 608], 1\n"
+      "vinsertf128 ymm3, ymm3, [r8 + 624], 1\n"
+      "vinsertf128 ymm4, ymm4, [r8 + 640], 1\n"
+      "vinsertf128 ymm5, ymm5, [r8 + 656], 1\n"
+      "vinsertf128 ymm6, ymm6, [r8 + 672], 1\n"
+      "vinsertf128 ymm7, ymm7, [r8 + 688], 1\n"
+      "vinsertf128 ymm8, ymm8, [r8 + 704], 1\n"
+      "vinsertf128 ymm9, ymm9, [r8 + 720], 1\n"
+      "vinsertf128 ymm10, ymm10, [r8 + 736], 1\n"
+      "vinsertf128 ymm11, ymm11, [r8 + 752], 1\n"
+      "vinsertf128 ymm12, ymm12, [r8 + 768], 1\n"
+      "vinsertf128 ymm13, ymm13, [r8 + 784], 1\n"
+      "vinsertf128 ymm14, ymm14, [r8 + 800], 1\n"
+      "vinsertf128 ymm15, ymm15, [r8 + 816], 1\n"
       "Lh_gate_fp_in_done:\n"
 
       "mov rcx, [rip + hyda_gate_ctx]\n"
@@ -470,14 +482,25 @@ HYDA_ENTRY __attribute__((naked, noinline)) void hyda_vm_gate_leave(void) {
       "push rax\n push rdx\n push r8\n"
       "mov r8, qword ptr [rip + hyda_gate_fp_ptr]\n"
       "cmp byte ptr [rip + hyda_gate_avx], 0\n"
-      "je Lh_gate_fx_out\n"
-      "xor edx, edx\n"
-      "mov eax, 7\n"
-      "xsave [r8]\n"
-      "jmp Lh_gate_fp_out_done\n"
-      "Lh_gate_fx_out:\n"
-      "fxsave [r8]\n"
+      "je Lh_gate_fp_out_done\n"
+      "vextractf128 [r8 + 576], ymm0, 1\n"
+      "vextractf128 [r8 + 592], ymm1, 1\n"
+      "vextractf128 [r8 + 608], ymm2, 1\n"
+      "vextractf128 [r8 + 624], ymm3, 1\n"
+      "vextractf128 [r8 + 640], ymm4, 1\n"
+      "vextractf128 [r8 + 656], ymm5, 1\n"
+      "vextractf128 [r8 + 672], ymm6, 1\n"
+      "vextractf128 [r8 + 688], ymm7, 1\n"
+      "vextractf128 [r8 + 704], ymm8, 1\n"
+      "vextractf128 [r8 + 720], ymm9, 1\n"
+      "vextractf128 [r8 + 736], ymm10, 1\n"
+      "vextractf128 [r8 + 752], ymm11, 1\n"
+      "vextractf128 [r8 + 768], ymm12, 1\n"
+      "vextractf128 [r8 + 784], ymm13, 1\n"
+      "vextractf128 [r8 + 800], ymm14, 1\n"
+      "vextractf128 [r8 + 816], ymm15, 1\n"
       "Lh_gate_fp_out_done:\n"
+      "fxsave [r8]\n"
       "pop r8\n pop rdx\n pop rax\n"
 
       HYDA_GPR_SAVE
@@ -546,21 +569,53 @@ HYDA_LEAVE_ALIAS(hyda_vm_gate_leave_c)
 extern "C" void hyda_fp_save_helper(void) {
   hyda_gate_fp_ensure();
   hyda::HydaFpState* fp = hyda::fp_state();
+  __asm__ volatile("fxsave (%0)" ::"r"(fp) : "memory");
   if (hyda_gate_avx) {
-    unsigned lo = 7, hi = 0;
-    __asm__ volatile("xsave (%2)" : : "a"(lo), "d"(hi), "r"(fp) : "memory");
-  } else {
-    __asm__ volatile("fxsave (%0)" ::"r"(fp) : "memory");
+    __asm__ volatile(
+        "vextractf128 $1, %%ymm0, 576(%0)\n"
+        "vextractf128 $1, %%ymm1, 592(%0)\n"
+        "vextractf128 $1, %%ymm2, 608(%0)\n"
+        "vextractf128 $1, %%ymm3, 624(%0)\n"
+        "vextractf128 $1, %%ymm4, 640(%0)\n"
+        "vextractf128 $1, %%ymm5, 656(%0)\n"
+        "vextractf128 $1, %%ymm6, 672(%0)\n"
+        "vextractf128 $1, %%ymm7, 688(%0)\n"
+        "vextractf128 $1, %%ymm8, 704(%0)\n"
+        "vextractf128 $1, %%ymm9, 720(%0)\n"
+        "vextractf128 $1, %%ymm10, 736(%0)\n"
+        "vextractf128 $1, %%ymm11, 752(%0)\n"
+        "vextractf128 $1, %%ymm12, 768(%0)\n"
+        "vextractf128 $1, %%ymm13, 784(%0)\n"
+        "vextractf128 $1, %%ymm14, 800(%0)\n"
+        "vextractf128 $1, %%ymm15, 816(%0)\n"
+        ::"r"(fp)
+        : "memory");
   }
 }
 extern "C" void hyda_fp_restore_helper(void) {
   hyda_gate_fp_ensure();
   hyda::HydaFpState* fp = hyda::fp_state();
+  __asm__ volatile("fxrstor (%0)" ::"r"(fp) : "memory");
   if (hyda_gate_avx) {
-    unsigned lo = 7, hi = 0;
-    __asm__ volatile("xrstor (%2)" : : "a"(lo), "d"(hi), "r"(fp) : "memory");
-  } else {
-    __asm__ volatile("fxrstor (%0)" ::"r"(fp) : "memory");
+    __asm__ volatile(
+        "vinsertf128 $1, 576(%0), %%ymm0, %%ymm0\n"
+        "vinsertf128 $1, 592(%0), %%ymm1, %%ymm1\n"
+        "vinsertf128 $1, 608(%0), %%ymm2, %%ymm2\n"
+        "vinsertf128 $1, 624(%0), %%ymm3, %%ymm3\n"
+        "vinsertf128 $1, 640(%0), %%ymm4, %%ymm4\n"
+        "vinsertf128 $1, 656(%0), %%ymm5, %%ymm5\n"
+        "vinsertf128 $1, 672(%0), %%ymm6, %%ymm6\n"
+        "vinsertf128 $1, 688(%0), %%ymm7, %%ymm7\n"
+        "vinsertf128 $1, 704(%0), %%ymm8, %%ymm8\n"
+        "vinsertf128 $1, 720(%0), %%ymm9, %%ymm9\n"
+        "vinsertf128 $1, 736(%0), %%ymm10, %%ymm10\n"
+        "vinsertf128 $1, 752(%0), %%ymm11, %%ymm11\n"
+        "vinsertf128 $1, 768(%0), %%ymm12, %%ymm12\n"
+        "vinsertf128 $1, 784(%0), %%ymm13, %%ymm13\n"
+        "vinsertf128 $1, 800(%0), %%ymm14, %%ymm14\n"
+        "vinsertf128 $1, 816(%0), %%ymm15, %%ymm15\n"
+        ::"r"(fp)
+        : "memory");
   }
 }
 

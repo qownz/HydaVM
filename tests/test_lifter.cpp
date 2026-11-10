@@ -14,7 +14,6 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -32,29 +31,36 @@ static void ck(bool ok, const std::string& what) {
   }
 }
 
-// True when this environment actually round-trips the upper 128 bits of YMM
-// through XSAVE/XSAVE (some virtualized runners report AVX but drop them).
-static bool xsave_ymm_ok() {
-  alignas(64) unsigned char area[832];
-  std::memset(area, 0, sizeof(area));
+static void test_simd_roundtrip() {
+  if (!hyda::fp_supports_avx()) {
+    std::printf("  SKIP simd round-trip: no AVX\n");
+    return;
+  }
   alignas(32) uint32_t pat[8], out[8];
-  for (int i = 0; i < 8; ++i) pat[i] = 0xA5A50000u + static_cast<uint32_t>(i);
+  for (int i = 0; i < 8; ++i) pat[i] = 0xC0DE0000u + static_cast<uint32_t>(i);
   std::memset(out, 0, sizeof(out));
+
   __asm__ __volatile__(
       ".intel_syntax noprefix\n"
-      "vmovups ymm0, [%1]\n"
-      "mov eax, 7\n"
-      "xor edx, edx\n"
-      "xsave [%0]\n"
+      "vmovups ymm0, [%0]\n"
+      ".att_syntax prefix\n" ::"r"(pat)
+      : "ymm0", "memory");
+  hyda_vm_save_simd();
+  __asm__ __volatile__(
+      ".intel_syntax noprefix\n"
       "vxorps ymm0, ymm0, ymm0\n"
-      "mov eax, 7\n"
-      "xor edx, edx\n"
-      "xrstor [%0]\n"
-      "vmovups [%2], ymm0\n"
-      "vzeroupper\n"
-      ".att_syntax prefix\n"
-      : : "r"(area), "r"(pat), "r"(out) : "rax", "rdx", "ymm0", "memory");
-  return out[4] == pat[4] && out[7] == pat[7];
+      ".att_syntax prefix\n" ::: "ymm0");
+  hyda_vm_restore_simd();
+  __asm__ __volatile__(
+      ".intel_syntax noprefix\n"
+      "vmovups [%0], ymm0\n"
+      ".att_syntax prefix\n" ::"r"(out)
+      : "memory");
+
+  bool ok = true;
+  for (int i = 0; i < 8; ++i) ok = ok && (out[i] == pat[i]);
+  ck(ok, "simd save/restore preserves full YMM");
+  std::printf("  %s  simd save/restore round-trip (YMM)\n", ok ? "OK " : "FAIL");
 }
 
 #define HYDA_FN(NAME, SEC)                                        \
@@ -1385,8 +1391,8 @@ static void gate_section() {
     if (!g.ok) return;
     ck(g.islands.size() >= 1,
        "f_avx256_gate: expected at least 1 island (phaddd), got: " + std::to_string(g.islands.size()));
-    if (std::getenv("HYDA_SKIP_SIMD_GATE") != nullptr || !xsave_ymm_ok()) {
-      std::printf("  SKIP f_avx256_gate: SIMD gate disabled for this environment\n");
+    if (!hyda::fp_supports_avx()) {
+      std::printf("  SKIP f_avx256_gate: no AVX on this host\n");
     } else {
       alignas(32) const float a[8] = {1.5f, -2.25f, 3.0f, -0.5f,
                                       7.25f, -8.5f, 0.125f, 42.0f};
@@ -2062,6 +2068,8 @@ static void island_decoy_section() {
 int main() {
   std::printf("HydaVM lifter differential test\n");
   std::printf("  opcodes: %zu, NVREG: %d\n", OP_COUNT, NVREG);
+
+  test_simd_roundtrip();
 
   std::printf("\n[1] Hand-written x86-64 functions (native == VM)\n");
   run_diff("f_alu", f_alu, reinterpret_cast<uintptr_t>(__stop_hyda_f_alu),

@@ -36,12 +36,7 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      # GitHub-hosted runners virtualize XSAVE and do not round-trip the upper
-      # 128 bits of YMM across the SIMD gate, so that one check is skipped here.
-      # Run the full suite locally (or on real hardware) for full coverage.
       - name: Test
-        env:
-          HYDA_SKIP_SIMD_GATE: "1"
         run: ctest --test-dir build --output-on-failure
 
   windows-pe:
