@@ -63,6 +63,27 @@ static void test_simd_roundtrip() {
   std::printf("  %s  simd save/restore round-trip (YMM)\n", ok ? "OK " : "FAIL");
 }
 
+static void test_const_blinding() {
+  const uint64_t k = 0x1122334455667788ull;
+  IRProgram p;
+  p.add(IRCommand::mov(IROperand::R(REG_RAX), IROperand::I(static_cast<int64_t>(k))));
+  p.add(IRCommand::none(IROp::Halt));
+  Asm a;
+  const CodegenResult cg = ir_codegen(p, a);
+  ck(cg.ok, std::string("const blind: codegen (") + cg.error + ")");
+  if (!cg.ok) return;
+
+  bool found = false;
+  for (size_t i = 0; i + 8 <= a.code.size(); ++i) {
+    uint64_t v = 0;
+    std::memcpy(&v, &a.code[i], 8);
+    if (v == k) { found = true; break; }
+  }
+  ck(!found, "const blind: literal absent from bytecode");
+  std::printf("  %s  const blind: immediate not emitted literally\n",
+              found ? "FAIL" : "OK ");
+}
+
 #define HYDA_FN(NAME, SEC)                                        \
   __attribute__((naked, noinline, section(SEC)))                  \
   uint64_t NAME(uint64_t, uint64_t, uint64_t, uint64_t)
@@ -2070,6 +2091,7 @@ int main() {
   std::printf("  opcodes: %zu, NVREG: %d\n", OP_COUNT, NVREG);
 
   test_simd_roundtrip();
+  test_const_blinding();
 
   std::printf("\n[1] Hand-written x86-64 functions (native == VM)\n");
   run_diff("f_alu", f_alu, reinterpret_cast<uintptr_t>(__stop_hyda_f_alu),

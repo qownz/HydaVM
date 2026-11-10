@@ -260,6 +260,46 @@ class Lower {
     return true;
   }
 
+  uint64_t next_rand() { return splitmix64(blind_s_); }
+
+  void load_blinded(int reg, int64_t value, uint8_t size) {
+    Op mov_op;
+    if (!pick_size(Op::MOV_RI8, Op::MOV_RI16, Op::MOV_RI32, Op::MOV_RI, size,
+                   &mov_op)) {
+      return;
+    }
+    if (size < 4) { i_rq(mov_op, reg, value); return; }
+
+    const unsigned parts = 2u + static_cast<unsigned>(next_rand() % 3u);
+    int32_t delta[4] = {0, 0, 0, 0};
+    uint64_t total = 0;
+    for (unsigned i = 0; i < parts && i < 4; ++i) {
+      delta[i] = static_cast<int32_t>(static_cast<uint32_t>(next_rand()));
+      total += static_cast<uint64_t>(static_cast<int64_t>(delta[i]));
+    }
+
+    IRMem m;
+    m.base = reg;
+    if (size == 8) {
+      const uint64_t head = static_cast<uint64_t>(value) - total;
+      i_rq(Op::MOV_RI, reg, static_cast<int64_t>(head));
+      for (unsigned i = 0; i < parts; ++i) {
+        m.disp = delta[i];
+        i_mem(Op::LEA, reg, m);
+      }
+      return;
+    }
+
+    const uint32_t head32 = static_cast<uint32_t>(value) -
+                            static_cast<uint32_t>(total);
+    i_rq(Op::MOV_RI32, reg, static_cast<int64_t>(head32));
+    for (unsigned i = 0; i < parts; ++i) {
+      m.disp = delta[i];
+      i_mem(Op::LEA, reg, m);
+    }
+    i_rr(Op::MOV_RR32, reg, reg);
+  }
+
   bool materialize(const IROperand& src, uint8_t size, int* out_reg, const IRCommand& c) {
     switch (src.kind) {
       case IRKind::Reg:
@@ -271,7 +311,7 @@ class Lower {
           fail(c, "invalid immediate size");
           return false;
         }
-        i_rq(o, SCRATCH_B, src.imm);
+        load_blinded(SCRATCH_B, src.imm, size);
         *out_reg = SCRATCH_B;
         return true;
       }
@@ -423,7 +463,7 @@ class Lower {
           fail(c, "invalid mov size");
           return;
         }
-        i_rq(o, c.dst.reg, c.src.imm);
+        load_blinded(c.dst.reg, c.src.imm, c.size);
       } else if (c.src.kind == IRKind::Mem) {
         load_into(c.dst.reg, c.src.mem, c.size, c);
       } else {
@@ -436,7 +476,7 @@ class Lower {
       if (c.src.kind == IRKind::Reg) {
         store_from(c.src.reg, c.dst.mem, c.size, c);
       } else if (c.src.kind == IRKind::Imm) {
-        i_rq(Op::MOV_RI, SCRATCH_A, c.src.imm);
+        load_blinded(SCRATCH_A, c.src.imm, 8);
         store_from(SCRATCH_A, c.dst.mem, c.size, c);
       } else {
         fail(c, "no memory-to-memory move");
@@ -476,7 +516,10 @@ class Lower {
   void emit_push(const IRCommand& c) {
     switch (c.src.kind) {
       case IRKind::Reg: i_r(Op::PUSH_R, c.src.reg); break;
-      case IRKind::Imm: a_.i_q(Op::PUSH_IMM, c.src.imm); break;
+      case IRKind::Imm:
+        load_blinded(SCRATCH_A, c.src.imm, 8);
+        i_r(Op::PUSH_R, SCRATCH_A);
+        break;
       case IRKind::Mem:
         if (!load_into(SCRATCH_A, c.src.mem, c.size, c)) return;
         i_r(Op::PUSH_R, SCRATCH_A);
@@ -659,7 +702,7 @@ class Lower {
         int src = 0;
         if (!materialize(c.src, c.size, &src, c)) return;
         i_rr(mv, c.dst.reg, src);
-        i_rq(mi, SCRATCH_B, c.aux.imm);
+        load_blinded(SCRATCH_B, c.aux.imm, c.size);
         i_rr(o, c.dst.reg, SCRATCH_B);
         return;
       }
@@ -978,6 +1021,7 @@ class Lower {
   size_t nested_ = 0;
   size_t dead_dropped_ = 0;
   uint64_t site_ = 0;
+  uint64_t blind_s_ = codegen_seed() ^ 0x243F6A8885A308D3ull;
 };
 
 }
