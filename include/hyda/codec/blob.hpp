@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 #include "hyda/core/instance.hpp"
@@ -67,6 +68,29 @@ inline uint32_t crc32(const uint8_t* p, uint32_t n, uint32_t seed = 0) {
       const uint32_t mask = static_cast<uint32_t>(-static_cast<int32_t>(c & 1u));
       c = (c >> 1) ^ (0xEDB88320u & mask);
     }
+  }
+  return c ^ 0xFFFFFFFFu;
+}
+
+constexpr std::array<uint32_t, 256> crc32_make_table() {
+  std::array<uint32_t, 256> t{};
+  for (uint32_t i = 0; i < 256; ++i) {
+    uint32_t c = i;
+    for (int k = 0; k < 8; ++k) {
+      c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+    }
+    t[i] = c;
+  }
+  return t;
+}
+
+inline constexpr std::array<uint32_t, 256> kCrc32Table = crc32_make_table();
+
+// Same result as crc32(), table-driven (used on the per-call integrity path).
+inline uint32_t crc32_fast(const uint8_t* p, uint32_t n, uint32_t seed = 0) {
+  uint32_t c = seed ^ 0xFFFFFFFFu;
+  for (uint32_t i = 0; i < n; ++i) {
+    c = kCrc32Table[(c ^ p[i]) & 0xFFu] ^ (c >> 8);
   }
   return c ^ 0xFFFFFFFFu;
 }

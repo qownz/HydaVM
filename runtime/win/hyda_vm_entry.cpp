@@ -283,7 +283,9 @@ bool ensure_handler_shard(const uint8_t* base) {
 
 }
 
-void shard_crypt(unsigned i, DWORD final_prot) {
+extern "C" __attribute__((noreturn)) void hyda_vm_fail(uint32_t code);
+
+void shard_crypt(unsigned i, DWORD final_prot, bool verify) {
   VirtualProtectFn vprot = vprotect();
   DWORD old = 0;
   if (vprot != nullptr) {
@@ -292,6 +294,10 @@ void shard_crypt(unsigned i, DWORD final_prot) {
   }
   hyda::hydak_xor(g_hydak_shards[i].ptr, g_hydak_shards[i].size,
                   hyda::hydak_key_for(g_hydak_shards[i].rva));
+  if (verify && !hyda::hydak_verify_plain(g_hydak_shards[i].ptr,
+                                          g_hydak_shards[i].size)) {
+    hyda_vm_fail(hyda::HYDA_INTEGRITY_FAIL_CODE);
+  }
   if (vprot != nullptr) {
     vprot(g_hydak_shards[i].ptr, g_hydak_shards[i].size, final_prot, &old);
   }
@@ -302,7 +308,7 @@ void shards_acquire(uint64_t mask) {
   for (unsigned i = 0; i < g_hydak_nshards; ++i) {
     if (mask != 0 && ((mask >> i) & 1u) == 0) continue;
     if (g_shard_refs[i]++ == 0 && g_shard_plain[i] == 0) {
-      shard_crypt(i, PAGE_EXECUTE_READ);
+      shard_crypt(i, PAGE_EXECUTE_READ, true);
       g_shard_plain[i] = 1;
     }
     VirtualProtectFn vp = vprotect();
@@ -330,7 +336,7 @@ void shards_release(uint64_t mask) {
     if (mask != 0 && ((mask >> i) & 1u) == 0) continue;
     if (g_shard_refs[i] == 0) continue;
     if (--g_shard_refs[i] == 0 && g_shard_plain[i] != 0) {
-      shard_crypt(i, PAGE_EXECUTE_READ);
+      shard_crypt(i, PAGE_EXECUTE_READ, false);
       g_shard_plain[i] = 0;
     }
     VirtualProtectFn vp = vprotect();

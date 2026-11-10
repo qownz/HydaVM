@@ -240,6 +240,19 @@ inline bool hydak_open(uint8_t* shard, uint32_t size, uint64_t key,
   return true;
 }
 
+// Checks a decrypted shard: header fields plus the payload CRC.
+inline bool hydak_verify_plain(const uint8_t* shard, uint32_t size) {
+  if (shard == nullptr || size < sizeof(HydakHeader)) return false;
+  const HydakHeader* h = reinterpret_cast<const HydakHeader*>(shard);
+  if (h->magic != hydak_magic()) return false;
+  if (h->version != HYDA_HYDAK_VERSION) return false;
+  if (h->total_size != size) return false;
+  if (h->chunk_count == 0 || h->chunk_count > OP_COUNT + 1) return false;
+  const uint8_t* pay = shard + sizeof(HydakHeader);
+  const uint32_t pay_n = size - static_cast<uint32_t>(sizeof(HydakHeader));
+  return crc32_fast(pay, pay_n) == h->crc32;
+}
+
 inline bool hydak_probe(const uint8_t* p, uint32_t avail, uint64_t key,
                         uint32_t* total) {
   if (p == nullptr || avail < sizeof(HydakHeader)) return false;

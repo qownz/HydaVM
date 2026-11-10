@@ -2328,6 +2328,23 @@ static void test_hydak_shard() {
   {
     std::vector<uint8_t> b;
     build(&b, 0, HYDA_HYDAK_VERSION, 0);
+    hydak_xor(b.data(), total, hydak_key_for(shard_rva));  // decrypt
+    CHECK_TRUE(hydak_verify_plain(b.data(), total));
+
+    b[HYDA_HYDAK_CODE_OFF] ^= 0x01;
+    CHECK_TRUE(!hydak_verify_plain(b.data(), total));
+    b[HYDA_HYDAK_CODE_OFF] ^= 0x01;
+
+    b[0] ^= 0xFF;
+    CHECK_TRUE(!hydak_verify_plain(b.data(), total));
+    b[0] ^= 0xFF;
+
+    CHECK_TRUE(!hydak_verify_plain(b.data(), total - 16));
+  }
+
+  {
+    std::vector<uint8_t> b;
+    build(&b, 0, HYDA_HYDAK_VERSION, 0);
 
     b[0] ^= 0xFF;
     err = 0;
