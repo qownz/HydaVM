@@ -516,9 +516,10 @@ int Protector::collect_integrity() {
 
     for (size_t i = 0; i < pe.sections.size(); ++i) {
       const Section& s = pe.sections[i];
-      const bool is_text = s.name == ".text";
-      const bool is_rdata = s.name == ".rdata";
-      if (!is_text && !is_rdata) continue;
+      if (s.name == ".edata") continue;
+      if (s.name.compare(0, 7, ".debug_") == 0) continue;
+      const uint32_t ch = s.characteristics;
+      if ((ch & 0x80000000u) != 0 || (ch & 0x02000000u) != 0) continue;
       if (s.virt_size == 0 || s.raw_size == 0) continue;
 
       const uint32_t n = s.virt_size < s.raw_size ? s.virt_size : s.raw_size;

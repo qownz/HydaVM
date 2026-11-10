@@ -132,9 +132,16 @@ while i < len(pay):
 if zlib.crc32(bytes(pay)) & 0xFFFFFFFF != selfcrc:
     print('  FAIL self_crc mismatch (decrypted shard array)'); sys.exit(1)
 # Chunk CRCs must match the file bytes exactly.
+def sec_of(rva):
+    for nm, va, vs, ra, rs in secs:
+        if va <= rva < va + max(vs, rs):
+            return nm
+    return None
 bad = 0
+covered = set()
 for i in range(cnt):
     rva, size, want, _f = struct.unpack_from('<IIII', pay, i * 16)
+    covered.add(sec_of(rva))
     off = r2o(rva)
     if off is None or off + size > len(d):
         bad += 1; continue
@@ -142,5 +149,7 @@ for i in range(cnt):
         bad += 1
 if bad:
     print(f'  FAIL {bad} shard CRCs do not match the file bytes'); sys.exit(1)
+if not any(nm and nm not in ('.text', '.rdata') for nm in covered):
+    print('  FAIL integrity only covers .text/.rdata'); sys.exit(1)
 print(f'  OK   8k manifest: {cnt} shards, rva {integ_rva:#x}, data container '
       f'rva {dat_rva:#x} (RVA-bound encrypted), salt {salt:#x}')
