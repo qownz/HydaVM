@@ -25,11 +25,12 @@ jobs:
         run: |
           sudo .github/scripts/apt-mirror.sh
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ pkg-config libcapstone-dev
+          sudo apt-get install -y cmake ninja-build g++-13 pkg-config libcapstone-dev
 
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja
+          -DCMAKE_CXX_COMPILER=g++-13
           -DCMAKE_BUILD_TYPE=Release
           -DHYDA_BUILD_LIFTER=ON
 
@@ -41,7 +42,7 @@ jobs:
 
   windows-pe:
     name: Windows PE (cross-compile)
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
