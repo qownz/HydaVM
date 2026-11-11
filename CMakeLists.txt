@@ -145,6 +145,7 @@ if(HYDA_BUILD_LIFTER)
     tools/protect/handlers.cpp
     tools/protect/layout.cpp
     tools/protect/protector.cpp
+    tools/protect/report.cpp
   )
   target_link_libraries(hyda_protect PRIVATE hyda_lift)
   target_include_directories(hyda_protect PRIVATE

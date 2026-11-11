@@ -98,12 +98,29 @@ Useful commands:
 `list`/`inspect` are aliases for the legacy `--list`/`--list-handlers`
 flags; the classic `hyda_protect <in> <out> [options]` form is unchanged.
 
+A function that cannot be lifted is skipped and left native by default; the
+rest is still protected. `--strict` restores stop-on-first-error, and
+`--report` records what happened:
+
+```bash
+./build/hyda_protect app.exe app_protected.exe --report build/report.json
+./build/hyda_protect app.exe --dry-run --report build/report.json
+```
+
+The report lists every protected function with its x86 and bytecode size,
+native island count, fused/variant/dead-flag counters and whether operand
+encryption is on, plus a `skipped` array with the reason per function. It is
+plain JSON, so CI can gate on `totals.skipped == 0`.
+
 Common options:
 
 | Option | Purpose |
 |---|---|
 | `--vm-seed <hex>` | Seed for opcode map, keys and handler variants (random if omitted). |
 | `--rebase <hex>` | Change the output image base. |
+| `--report <file>` | Write a JSON report (per-function sizes, islands, skips). |
+| `--dry-run` | Analyze and report, write nothing; output path optional. |
+| `--strict` | Fail on the first function that cannot be protected. |
 | `--no-crypt <fn>` | Disable operand encryption for one blob (debugging). |
 | `--hydak-parts <n>` | Number of handler shards (default 6). |
 | `--hydak-containers <n>` | Number of data sections used to scatter shards. |

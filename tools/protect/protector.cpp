@@ -91,6 +91,9 @@ int Protector::run(const Options& opt) {
   list_only = opt.mode == Options::Mode::ListSections;
   list_handlers = opt.mode == Options::Mode::ListHandlers;
   do_mutate = opt.do_mutate;
+  strict_opt = opt.strict;
+  dry_run = opt.dry_run;
+  report_path = opt.report_path;
   do_rebase = opt.do_rebase;
   rebase_to = opt.rebase_to;
   hydak_parts = opt.hydak_parts;
@@ -277,7 +280,11 @@ int Protector::protect_file() {
 
   build_import_table();
 
-  if (lift_functions()) return 1;
+  if (lift_functions() != 0) {
+    build_report();
+    emit_report();
+    return 1;
+  }
 
   if (setup_handlers()) return 1;
 
@@ -310,6 +317,15 @@ int Protector::protect_file() {
   if (apply_rebase()) return 1;
 
   if (build_integrity_data()) return 1;
+
+  build_report();
+  if (emit_report()) return 1;
+
+  if (dry_run) {
+    std::printf("  dry run      : %s not written\n",
+                out_path != nullptr && out_path[0] != 0 ? out_path : "(no output)");
+    return 0;
+  }
 
   if (write_output()) return 1;
 
@@ -630,27 +646,35 @@ int Protector::build_import_table() {
 
 int Protector::lift_functions() {
 
+  auto skip = [this](const Section& s, const std::string& why) -> int {
+    if (strict_opt) {
+      std::printf("error: cannot protect %s: %s\n", s.name.c_str(), why.c_str());
+      return 1;
+    }
+    std::printf("warning: skipping %s: %s\n", s.name.c_str(), why.c_str());
+    skipped.push_back(ReportSkip{s.name, why});
+    return 0;
+  };
+
   for (size_t idx : targets) {
     const Section& s = pe.sections[idx];
     const uint32_t size = s.virt_size ? s.virt_size : s.raw_size;
 
     const uint32_t fn_syms = coff_function_symbols_in_section(pe, static_cast<int>(idx));
     if (fn_syms > 1) {
-      std::printf(
-          "error: section %s has %u function symbols; each `hydafn_*` "
-          "section must hold exactly one function (use `-fno-ipa-cp-clone` "
-          "for GCC cloning)\n",
-          s.name.c_str(), fn_syms);
-      return 1;
+      if (skip(s, std::to_string(fn_syms) +
+                      " function symbols in one section (use -fno-ipa-cp-clone)") != 0) {
+        return 1;
+      }
+      continue;
     }
     if (static_cast<uint64_t>(s.raw_addr) + size > pe.data.size()) {
       std::printf("error: section %s outside file\n", s.name.c_str());
       return 1;
     }
     if (size < 5) {
-      std::printf("error: %s too small (%u bytes) for jmp rel32\n",
-                  s.name.c_str(), size);
-      return 1;
+      if (skip(s, "section too small for a jmp rel32") != 0) return 1;
+      continue;
     }
 
     hyda::LiftOptions opt;
@@ -664,19 +688,33 @@ int Protector::lift_functions() {
         hyda::lift_x86_64(&pe.data[s.raw_addr], size, opt);
 
     if (!r.ok) {
-      std::printf("error: cannot lift %s: %s\n", s.name.c_str(), r.error.c_str());
-      for (const hyda::UnsupportedInsn& u : r.unsupported) {
-        std::printf("        %#llx %-10s %s\n",
-                    static_cast<unsigned long long>(u.address),
-                    u.mnemonic.c_str(), u.reason.c_str());
+      std::string why = r.error;
+      if (!r.unsupported.empty()) {
+        why = std::to_string(r.unsupported.size()) + " unsupported instruction(s), first: " +
+              r.unsupported.front().mnemonic + " (" + r.unsupported.front().reason + ")";
       }
-      return 1;
+      if (skip(s, why) != 0) {
+        for (const hyda::UnsupportedInsn& u : r.unsupported) {
+          std::printf("        %#llx %-10s %s\n",
+                      static_cast<unsigned long long>(u.address),
+                      u.mnemonic.c_str(), u.reason.c_str());
+        }
+        return 1;
+      }
+      for (size_t k = 0; k < r.unsupported.size() && k < 3; ++k) {
+        std::printf("        %#llx %-10s %s\n",
+                    static_cast<unsigned long long>(r.unsupported[k].address),
+                    r.unsupported[k].mnemonic.c_str(),
+                    r.unsupported[k].reason.c_str());
+      }
+      continue;
     }
     if (r.address_fixups != 0) {
-      std::printf("error: %s contains %zu ABSOLUTE addresses that cannot "
-                  "be relocated\n",
-                  s.name.c_str(), r.address_fixups);
-      return 1;
+      if (skip(s, std::to_string(r.address_fixups) +
+                      " absolute address(es) that cannot be relocated") != 0) {
+        return 1;
+      }
+      continue;
     }
 
     hyda::IRProgram prog = r.prog;
@@ -684,8 +722,8 @@ int Protector::lift_functions() {
     hyda::Asm asmb;
     const hyda::CodegenResult cg = hyda::ir_codegen(prog, asmb);
     if (!cg.ok) {
-      std::printf("error: cannot generate bytecode for %s: %s\n", s.name.c_str(), cg.error.c_str());
-      return 1;
+      if (skip(s, "codegen: " + cg.error) != 0) return 1;
+      continue;
     }
 
     Protected p;
@@ -718,6 +756,15 @@ int Protector::lift_functions() {
     }
 
     p.preserve = static_cast<uint16_t>(kVolatileMask & ~r.written_regs);
+    p.st_decoded = static_cast<uint32_t>(r.decoded);
+    p.st_ir = static_cast<uint32_t>(r.emitted);
+    p.st_islands = static_cast<uint32_t>(p.islands.size());
+    p.st_fused = static_cast<uint32_t>(r.fuse.fused);
+    p.st_variants = static_cast<uint32_t>(cg.body_variant_count);
+    p.st_dead_flags = static_cast<uint32_t>(cg.dead_flags);
+    for (size_t op = 0; op < hyda::OP_COUNT; ++op) {
+      if (p.op_used[op]) ++p.st_opcodes;
+    }
     prot.push_back(std::move(p));
 
     std::printf("  %-22s %4zu B x86 -> %3zu B bytecode (%zu IR, %zu RVA, "
@@ -1768,6 +1815,53 @@ int Protector::build_integrity_data() {
 
   }
 
+  return 0;
+}
+
+
+void Protector::build_report() {
+  report.input = in_path != nullptr ? in_path : "";
+  report.output = out_path != nullptr ? out_path : "";
+  report.dry_run = dry_run;
+  report.strict = strict_opt;
+  report.image_base = pe.image_base;
+  report.vm_seed = vm_seed_val;
+  report.hydak_seed = hydak_seed;
+  report.prof_mask = prof_mask;
+  report.prof_key = prof_key;
+  report.prof_base = prof_base;
+  report.prof_shift = prof_shift;
+  report.prof_call = prof_call;
+  report.prof_crypt = prof_crypt;
+  report.skipped = skipped;
+
+  for (const Protected& p : prot) {
+    ReportFn fn;
+    fn.name = p.name;
+    fn.rva = p.func_rva;
+    fn.x86_bytes = p.func_size;
+    fn.bytecode_bytes = static_cast<uint32_t>(p.code.size());
+    fn.islands = p.st_islands;
+    fn.fused = p.st_fused;
+    fn.variants = p.st_variants;
+    fn.dead_flags = p.st_dead_flags;
+    fn.opcodes = p.st_opcodes;
+    fn.encrypted = !p.no_crypt;
+    report.functions.push_back(std::move(fn));
+  }
+}
+
+
+int Protector::emit_report() {
+  if (report_path.empty()) return 0;
+  std::string err;
+  if (!write_report(report, report_path, &err)) {
+    std::printf("error: %s\n", err.c_str());
+    return 1;
+  }
+  std::printf("  report       : %s (%zu protected, %zu skipped)\n",
+              report_path.c_str(), report.functions.size(),
+              report.skipped.size());
   return 0;
 }
 

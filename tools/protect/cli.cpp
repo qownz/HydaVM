@@ -88,8 +88,15 @@ int parse_options(int argc, char** argv, Options* out) {
         continue;
       }
       if (is(a, "--no-mutate")) { out->do_mutate = false; continue; }
+      if (is(a, "--strict")) { out->strict = true; continue; }
+      if (is(a, "--dry-run")) { out->dry_run = true; continue; }
 
       bool ok = false;
+      if (is(a, "--report")) {
+        const char* v = value(a); if (!v) return 2;
+        out->report_path = v;
+        continue;
+      }
       if (is(a, "--vm-seed")) {
         const char* v = value(a); if (!v) return 2;
         out->vm_seed = v;
@@ -183,6 +190,10 @@ int parse_options(int argc, char** argv, Options* out) {
   }
 
   if (out->mode == Options::Mode::Protect) {
+    if (out->dry_run && pos.size() == 1) {
+      out->input = pos[0];
+      return 0;
+    }
     if (pos.size() != 2) {
       std::printf(kPosUsage, " and an output file", argv[0]);
       return 2;
@@ -221,6 +232,9 @@ void print_help(const char* argv0) {
       "  --vm-seed <hex>         VM seed (random when omitted)\n"
       "  --rebase <hex>          output image base (64K aligned)\n"
       "  --no-mutate             disable the mutation engine (debug)\n"
+      "  --strict                fail on the first unprotected function\n"
+      "  --dry-run               analyze and report without writing output\n"
+      "  --report <file>         write a JSON protection report\n"
       "  --no-crypt <fn>         disable operand encryption for one blob\n"
       "\n"
       "Handler sharding:\n"
@@ -239,10 +253,12 @@ void print_help(const char* argv0) {
       "Examples:\n"
       "  %s app.exe app_protected.exe --vm-seed 0x1122334455667788\n"
       "  %s list app.exe\n"
-      "  %s inspect app.exe\n",
+      "  %s inspect app.exe\n"
+      "  %s app.exe out.exe --report out.json\n"
+      "  %s app.exe --dry-run --report out.json\n",
       argv0, argv0, argv0, argv0,
       hyda::HYDA_AUDIT_PERIOD_MAX, hyda::HYDA_AUDIT_CHUNKS_MAX,
-      hyda::HYDA_AUDIT_REFS_MAX, argv0, argv0, argv0);
+      hyda::HYDA_AUDIT_REFS_MAX, argv0, argv0, argv0, argv0, argv0);
 }
 
 }  // namespace hyda::prot

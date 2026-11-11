@@ -101,6 +101,51 @@ echo "  opcode count : $OP_COUNT (from protector output)"
 AFTER="$(run_target "$PROTECTED")"
 echo "--- after protection ---"; echo "$AFTER" | sed 's/^/  /'
 
+# Reports, dry runs and failure isolation.
+REPORT="$WORK/report.json"
+DRY="$WORK/dry.json"
+if "$PROTECT" "$TARGET" "$WORK/dry.exe" --dry-run --report "$DRY" \
+   --dispatch-profile "$PROT_PROFILE" --vm-seed "$PROT_VM_SEED" >/dev/null 2>&1; then
+  ck 1 "dry run exits cleanly"
+else
+  ck 0 "dry run failed"
+fi
+if [ ! -e "$WORK/dry.exe" ] && [ -s "$DRY" ]; then
+  ck 1 "dry run wrote the report and left the output path alone"
+else
+  ck 0 "dry run artifact check failed"
+fi
+"$PROTECT" "$TARGET" "$WORK/report.exe" --report "$REPORT" \
+  --dispatch-profile "$PROT_PROFILE" --vm-seed "$PROT_VM_SEED" >/dev/null 2>&1
+if python3 "$E2E_DIR/check_report.py" "$REPORT" "$TARGET" protected; then
+  ck 1 "report lists every hydafn_* function as protected"
+else
+  ck 0 "report contents are wrong"
+fi
+
+SHRUNK="$WORK/pe_target.shrunk.exe"
+SKIP_REPORT="$WORK/skip.json"
+if python3 "$E2E_DIR/shrink_section.py" "$TARGET" "$SHRUNK" hydafn_mix32; then
+  if "$PROTECT" "$SHRUNK" "$WORK/skip.exe" --dry-run --report "$SKIP_REPORT" \
+     --dispatch-profile "$PROT_PROFILE" --vm-seed "$PROT_VM_SEED" >/dev/null 2>&1; then
+    if python3 "$E2E_DIR/check_report.py" "$SKIP_REPORT" "$SHRUNK" skipped; then
+      ck 1 "unprotectable function is skipped and reported"
+    else
+      ck 0 "skipped function not reported"
+    fi
+  else
+    ck 0 "skip path did not exit cleanly"
+  fi
+  if "$PROTECT" "$SHRUNK" "$WORK/strict.exe" --strict --dry-run \
+     --dispatch-profile "$PROT_PROFILE" --vm-seed "$PROT_VM_SEED" >/dev/null 2>&1; then
+    ck 0 "--strict did not reject an unprotectable function"
+  else
+    ck 1 "--strict rejects an unprotectable function"
+  fi
+else
+  ck 0 "could not build the shrink fixture"
+fi
+
 echo "--- checks ---"
 [ "$BASE" = "$AFTER" ] && ck 1 "output identical before/after protection (rebased)" || {
   ck 0 "output differs"

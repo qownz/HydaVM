@@ -15,6 +15,9 @@ struct Options {
   std::string output;
 
   bool do_mutate = true;
+  bool strict = false;
+  bool dry_run = false;
+  std::string report_path;
   bool do_rebase = false;
   uint64_t rebase_to = 0;
 

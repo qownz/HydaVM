@@ -14,6 +14,7 @@
 #include "lift.hpp"
 #include "native_island.hpp"
 #include "pe.hpp"
+#include "report.hpp"
 
 #include "hyda/codec/blob.hpp"
 #include "hyda/codec/crypt.hpp"
@@ -70,6 +71,8 @@ class Protector {
   int apply_rebase();
   int build_integrity_data();
   int write_output();
+  void build_report();
+  int emit_report();
 
   // --- options ---------------------------------------------------------
   bool list_only = false;
@@ -88,6 +91,10 @@ class Protector {
   std::vector<std::string> no_crypt_names;
   std::string prof_fixed_str;
   std::string vm_seed_str;
+  std::string report_path;
+  bool strict_opt = false;
+  bool dry_run = false;
+  std::vector<ReportSkip> skipped;
   const char* in_path = nullptr;
   const char* out_path = nullptr;
 
@@ -101,6 +108,7 @@ class Protector {
   TrampSyms syms;
   std::vector<uint32_t> leave_rvas;
   std::vector<Protected> prot;
+  Report report;
 
   uint32_t prof_mask = 0;
   uint32_t prof_key = 0;

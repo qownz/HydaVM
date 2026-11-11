@@ -51,6 +51,14 @@ struct Protected {
 
   uint64_t shard_mask = 0;
   bool op_used[hyda::OP_COUNT] = {};
+
+  uint32_t st_decoded = 0;
+  uint32_t st_ir = 0;
+  uint32_t st_islands = 0;
+  uint32_t st_fused = 0;
+  uint32_t st_variants = 0;
+  uint32_t st_dead_flags = 0;
+  uint32_t st_opcodes = 0;
 };
 
 struct PartPlan {
