@@ -26,14 +26,20 @@ def section_name(at):
     return data[strtab + off:end].decode('latin1')
 
 
+want = sys.argv[3]
+hits = 0
 for i in range(nsec):
     at = table + i * 40
     name = section_name(at)
-    if name != sys.argv[3]:
+    if want == '*':
+        if not name.startswith('hydafn_'):
+            continue
+    elif name != want:
         continue
     struct.pack_into('<I', data, at + 8, 4)
-    open(sys.argv[2], 'wb').write(bytes(data))
-    sys.exit(0)
+    hits += 1
 
-print("section not found: " + sys.argv[3])
-sys.exit(1)
+if hits == 0:
+    print("section not found: " + want)
+    sys.exit(1)
+open(sys.argv[2], 'wb').write(bytes(data))

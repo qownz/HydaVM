@@ -802,6 +802,13 @@ int Protector::lift_functions() {
     }
   }
 
+  if (prot.empty()) {
+    std::printf("error: no function could be protected\n");
+    return 1;
+  }
+  std::printf("  protected    : %zu of %zu functions (%zu skipped)\n",
+              prot.size(), targets.size(), skipped.size());
+
   return 0;
 }
 

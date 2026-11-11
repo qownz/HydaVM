@@ -142,6 +142,13 @@ if python3 "$E2E_DIR/shrink_section.py" "$TARGET" "$SHRUNK" hydafn_mix32; then
   else
     ck 1 "--strict rejects an unprotectable function"
   fi
+  python3 "$E2E_DIR/shrink_section.py" "$TARGET" "$WORK/pe_target.none.exe" '*' >/dev/null
+  if "$PROTECT" "$WORK/pe_target.none.exe" "$WORK/none.exe" --dry-run \
+     --dispatch-profile "$PROT_PROFILE" --vm-seed "$PROT_VM_SEED" >/dev/null 2>&1; then
+    ck 0 "protector accepted a target with no protectable function"
+  else
+    ck 1 "protector rejects a target with no protectable function"
+  fi
 else
   ck 0 "could not build the shrink fixture"
 fi
