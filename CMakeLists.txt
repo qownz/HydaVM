@@ -133,8 +133,9 @@ if(HYDA_BUILD_LIFTER)
             "${CMAKE_BINARY_DIR}"
     COMMENT "Lifting coverage: which corpus instructions stay islands")
 
-  add_executable(test_lifter tests/test_lifter.cpp)
+  add_executable(test_lifter tests/test_lifter.cpp tests/harness/test.cpp)
   target_link_libraries(test_lifter PRIVATE hyda_lift)
+  target_include_directories(test_lifter PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
   add_test(NAME lift_host COMMAND test_lifter)
 
   add_executable(hyda_protect

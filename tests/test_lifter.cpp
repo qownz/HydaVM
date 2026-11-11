@@ -1,3 +1,4 @@
+#include "harness/test.hpp"
 #include "lift.hpp"
 #include "native_island.hpp"
 
@@ -20,69 +21,14 @@
 
 using namespace hyda;
 
-static int g_checks = 0;
-static int g_fails = 0;
+namespace {
 
-static void ck(bool ok, const std::string& what) {
-  ++g_checks;
-  if (!ok) {
-    ++g_fails;
-    std::printf("  FAIL: %s\n", what.c_str());
-  }
-}
+hyda::test::Reporter* g_rep = nullptr;
 
-static void test_simd_roundtrip() {
-  if (!hyda::fp_supports_avx()) {
-    std::printf("  SKIP simd round-trip: no AVX\n");
-    return;
-  }
-  alignas(32) uint32_t pat[8], out[8];
-  for (int i = 0; i < 8; ++i) pat[i] = 0xC0DE0000u + static_cast<uint32_t>(i);
-  std::memset(out, 0, sizeof(out));
+}  // namespace
 
-  __asm__ __volatile__(
-      ".intel_syntax noprefix\n"
-      "vmovups ymm0, [%0]\n"
-      ".att_syntax prefix\n" ::"r"(pat)
-      : "ymm0", "memory");
-  hyda_vm_save_simd();
-  __asm__ __volatile__(
-      ".intel_syntax noprefix\n"
-      "vxorps ymm0, ymm0, ymm0\n"
-      ".att_syntax prefix\n" ::: "ymm0");
-  hyda_vm_restore_simd();
-  __asm__ __volatile__(
-      ".intel_syntax noprefix\n"
-      "vmovups [%0], ymm0\n"
-      ".att_syntax prefix\n" ::"r"(out)
-      : "memory");
-
-  bool ok = true;
-  for (int i = 0; i < 8; ++i) ok = ok && (out[i] == pat[i]);
-  ck(ok, "simd save/restore preserves full YMM");
-  std::printf("  %s  simd save/restore round-trip (YMM)\n", ok ? "OK " : "FAIL");
-}
-
-static void test_const_blinding() {
-  const uint64_t k = 0x1122334455667788ull;
-  IRProgram p;
-  p.add(IRCommand::mov(IROperand::R(REG_RAX), IROperand::I(static_cast<int64_t>(k))));
-  p.add(IRCommand::none(IROp::Halt));
-  Asm a;
-  const CodegenResult cg = ir_codegen(p, a);
-  ck(cg.ok, std::string("const blind: codegen (") + cg.error + ")");
-  if (!cg.ok) return;
-
-  bool found = false;
-  for (size_t i = 0; i + 8 <= a.code.size(); ++i) {
-    uint64_t v = 0;
-    std::memcpy(&v, &a.code[i], 8);
-    if (v == k) { found = true; break; }
-  }
-  ck(!found, "const blind: literal absent from bytecode");
-  std::printf("  %s  const blind: immediate not emitted literally\n",
-              found ? "FAIL" : "OK ");
-}
+#define ck(ok, what) \
+  (g_rep->check(static_cast<bool>(ok), (what), __FILE__, __LINE__))
 
 #define HYDA_FN(NAME, SEC)                                        \
   __attribute__((naked, noinline, section(SEC)))                  \
@@ -753,20 +699,6 @@ HYDA_FN(f_tail, "hyda_f_tail") {
 }
 extern "C" char __stop_hyda_f_tail[];
 
-extern "C" __attribute__((naked, noinline)) void test_seed_xmm0(const float*) {
-  __asm__(".intel_syntax noprefix\n"
-          "movss xmm0, [rdi]\n"
-          "jmp hyda_vm_save_simd\n"
-          ".att_syntax prefix\n");
-}
-
-extern "C" __attribute__((naked, noinline)) void test_read_xmm0(float*) {
-  __asm__(".intel_syntax noprefix\n"
-          "movss [rdi], xmm0\n"
-          "ret\n"
-          ".att_syntax prefix\n");
-}
-
 extern "C" __attribute__((naked, noinline))
 uint64_t test_call_xmm0(uint64_t, uint64_t, uint64_t, uint64_t) {
   __asm__(".intel_syntax noprefix\n"
@@ -920,14 +852,14 @@ static void run_diff(const char* name, FnPtr fn, uintptr_t stop_addr,
       ++bad;
     }
   }
-  ++g_checks;
   if (bad == 0) {
     std::printf("  OK  %-12s %3d inputs, %zu x86 insns -> %zu IR insns, %zu bytes bytecode\n",
                 name, n, r.decoded, r.emitted, cg.code_size);
   } else {
-    ++g_fails;
     std::printf("  FAIL %-12s %d/%d inputs failed\n", name, bad, n);
   }
+  ck(bad == 0, std::string(name) + ": " + std::to_string(bad) + "/" +
+                   std::to_string(n) + " inputs failed");
 }
 
 struct VmOut {
@@ -977,11 +909,10 @@ static uint32_t shift_mask(unsigned n, unsigned size, bool shlshr) {
   return 0x1Du;
 }
 
-static void run_diff_out(const char* name, FnPtr fn, uintptr_t stop_addr,
-                         const std::vector<Case>& cases, MaskFn mask,
-                         SkipFn skip = nullptr,
-                         size_t* dead_flags = nullptr,
-                         size_t* dead_dropped = nullptr) {
+static void diff_cases(const char* name, FnPtr fn, uintptr_t stop_addr,
+                       const std::vector<Case>& cases, MaskFn mask,
+                       SkipFn skip, uint64_t mutate_seed, size_t* dead_flags,
+                       size_t* dead_dropped) {
   const uintptr_t start = reinterpret_cast<uintptr_t>(fn);
   if (stop_addr <= start) {
     ck(false, std::string(name) + ": invalid section range");
@@ -991,6 +922,7 @@ static void run_diff_out(const char* name, FnPtr fn, uintptr_t stop_addr,
   LiftOptions opt;
   opt.base_address = start;
   opt.name = name;
+  opt.mutate_seed = mutate_seed;
   const LiftResult r = lift_x86_64(reinterpret_cast<const uint8_t*>(start),
                                    static_cast<size_t>(stop_addr - start), opt);
   ck(r.ok, std::string(name) + ": lift basarili (" + r.error + ")");
@@ -1051,14 +983,29 @@ static void run_diff_out(const char* name, FnPtr fn, uintptr_t stop_addr,
       ++bad;
     }
   }
-  ++g_checks;
   if (bad == 0) {
     std::printf("  OK  %-12s %4d inputs, %zu x86 insns -> %zu bytes bytecode\n",
                 name, n, r.decoded, cg.code_size);
   } else {
-    ++g_fails;
     std::printf("  FAIL %-12s %d/%d inputs failed\n", name, bad, n);
   }
+  ck(bad == 0, std::string(name) + ": " + std::to_string(bad) + "/" +
+                   std::to_string(n) + " inputs differ from native");
+}
+
+static void run_diff_out(const char* name, FnPtr fn, uintptr_t stop_addr,
+                         const std::vector<Case>& cases, MaskFn mask,
+                         SkipFn skip = nullptr,
+                         size_t* dead_flags = nullptr,
+                         size_t* dead_dropped = nullptr) {
+  diff_cases(name, fn, stop_addr, cases, mask, skip, 0, dead_flags, dead_dropped);
+}
+
+static void run_diff_seeded(const char* name, FnPtr fn, uintptr_t stop_addr,
+                            const std::vector<Case>& cases, MaskFn mask,
+                            uint64_t mutate_seed) {
+  diff_cases(name, fn, stop_addr, cases, mask, nullptr, mutate_seed, nullptr,
+             nullptr);
 }
 
 static std::vector<Case> mk_shift_cases() {
@@ -1169,8 +1116,52 @@ static std::vector<PlacedIsland> g_placed;
 static uint64_t g_placed_image_base = 0;
 static uint32_t g_placed_first_rva = 0;
 
+// Seeding host XMM0 and calling save_simd must be one indivisible step, and the
+// value must be read back in the same block as restore_simd.
+extern "C" __attribute__((naked, noinline))
+void simd_roundtrip_probe(uint64_t pat, uint64_t out, uint64_t save_fn,
+                          uint64_t restore_fn) {
+  __asm__(".intel_syntax noprefix\n"
+          "push rbx\n"
+          "mov rbx, rsi\n"
+          "mov rax, rcx\n"
+          "vmovups ymm0, [rdi]\n"
+          "call rdx\n"
+          "vxorps ymm0, ymm0, ymm0\n"
+          "call rax\n"
+          "vmovups [rbx], ymm0\n"
+          "pop rbx\n"
+          "ret\n"
+          ".att_syntax prefix\n");
+}
+
+extern "C" __attribute__((naked, noinline))
+void simd_seed_xmm0(const float* v, uint64_t save_fn) {
+  __asm__(".intel_syntax noprefix\n"
+          "sub rsp, 8\n"
+          "movss xmm0, [rdi]\n"
+          "call rsi\n"
+          "add rsp, 8\n"
+          "ret\n"
+          ".att_syntax prefix\n");
+}
+
+extern "C" __attribute__((naked, noinline))
+void simd_restore_read_xmm0(uint64_t restore_fn, float* out) {
+  __asm__(".intel_syntax noprefix\n"
+          "push rbx\n"
+          "mov rbx, rsi\n"
+          "mov rax, rdi\n"
+          "call rax\n"
+          "movss [rbx], xmm0\n"
+          "pop rbx\n"
+          "ret\n"
+          ".att_syntax prefix\n");
+}
+
 static GatedCall vm_run_gated(Gated& g, uint64_t a0, uint64_t a1, uint64_t a2,
-                              uint64_t a3, bool capture_fp = true) {
+                              uint64_t a3, bool capture_fp = true,
+                              float* out_xmm0 = nullptr) {
   GatedCall out;
   uint64_t image_base = 0;
   uint32_t first_rva = 0, leave_rva = 0;
@@ -1225,7 +1216,11 @@ static GatedCall vm_run_gated(Gated& g, uint64_t a0, uint64_t a1, uint64_t a2,
 
   if (capture_fp) hyda_vm_save_simd();
   out.status = vm_exec(ctx, g.asmb.code.data(), g.asmb.code.size());
-  hyda_vm_restore_simd();
+  if (out_xmm0 != nullptr) {
+    simd_restore_read_xmm0(reinterpret_cast<uint64_t>(&hyda_vm_restore_simd), out_xmm0);
+  } else {
+    hyda_vm_restore_simd();
+  }
   out.ret = ctx.r[vsl(REG_RAX)];
   out.steps = ctx.steps;
   out.ok = true;
@@ -1594,9 +1589,9 @@ static void gate_section() {
                      reinterpret_cast<uint64_t>(&on),
                      reinterpret_cast<uint64_t>(&arg),
                      reinterpret_cast<uint64_t>(&rn));
-      test_seed_xmm0(&arg);
-      GatedCall gr = vm_run_gated(g, reinterpret_cast<uint64_t>(&ov), 0, 0, 0, false);
-      test_read_xmm0(&rv);
+      simd_seed_xmm0(&arg, reinterpret_cast<uint64_t>(&hyda_vm_save_simd));
+      GatedCall gr = vm_run_gated(g, reinterpret_cast<uint64_t>(&ov), 0, 0, 0, false,
+                                  &rv);
       if (!gr.ok) { ck(false, std::string("f_xmmarg: gated (") + gr.error + ")"); return; }
       ++n;
       if (gr.status != ST_HALT || ov != on || rv != rn || gr.ret != 7) ++bad;
@@ -2106,389 +2101,509 @@ static void island_decoy_section() {
               "OK ", n_decoy, n_island);
 }
 
-int main() {
-  std::printf("HydaVM lifter differential test\n");
-  std::printf("  opcodes: %zu, NVREG: %d\n", OP_COUNT, NVREG);
+// ALU, branches, calls, 8/16/32-bit forms and memory operands.
+HYDA_TEST(Int, hand_written, "Hand-written x86-64 bodies: native == VM") {
+  g_rep = &r;
+run_diff("f_alu", f_alu, reinterpret_cast<uintptr_t>(__stop_hyda_f_alu),
+         mk_cases(200, ~0ull, ~0ull, ~0ull, ~0ull));
+run_diff("f_cmp", f_cmp, reinterpret_cast<uintptr_t>(__stop_hyda_f_cmp),
+         mk_cases(200, ~0ull, ~0ull, 0, 0));
+run_diff("f_loop", f_loop, reinterpret_cast<uintptr_t>(__stop_hyda_f_loop),
+         mk_cases(80, 3000, 0, 0, 0));
+run_diff("f_alu_jcc", f_alu_jcc,
+         reinterpret_cast<uintptr_t>(__stop_hyda_f_alu_jcc),
+         mk_cases(200, 64, ~0ull, 0, 0));
+run_diff("f_shift", f_shift, reinterpret_cast<uintptr_t>(__stop_hyda_f_shift),
+         mk_cases(200, ~0ull, ~0ull, ~0ull, 0));
+run_diff("f_extend", f_extend, reinterpret_cast<uintptr_t>(__stop_hyda_f_extend),
+         mk_cases(200, ~0ull, ~0ull, 0, 0));
+run_diff("f_div", f_div, reinterpret_cast<uintptr_t>(__stop_hyda_f_div),
+         mk_cases(200, ~0ull, 0xFFFF, 0, 0),
+         [](const Case& c) { return c.b == 0; });
+run_diff("f_call", f_call, reinterpret_cast<uintptr_t>(__stop_hyda_f_call),
+         mk_cases(200, ~0ull, ~0ull, 0, 0));
+run_diff("f_32bit", f_32bit, reinterpret_cast<uintptr_t>(__stop_hyda_f_32bit),
+         mk_cases(200, ~0ull, ~0ull, ~0ull, 0));
+run_diff("f_test32", f_test32, reinterpret_cast<uintptr_t>(__stop_hyda_f_test32),
+         mk_cases(200, ~0ull, ~0ull, 0, 0));
+run_diff("f_imul_lea", f_imul_lea, reinterpret_cast<uintptr_t>(__stop_hyda_f_imul_lea),
+         mk_cases(200, ~0ull, ~0ull, ~0ull, 0));
+run_diff("f_cmov32", f_cmov32, reinterpret_cast<uintptr_t>(__stop_hyda_f_cmov32),
+         mk_cases(200, ~0ull, 0xFFFFFFFF, ~0ull, 0));
+run_diff("f_cmov64", f_cmov64, reinterpret_cast<uintptr_t>(__stop_hyda_f_cmov64),
+         mk_cases(200, ~0ull, ~0ull, ~0ull, 0));
+run_diff("f_setcc", f_setcc, reinterpret_cast<uintptr_t>(__stop_hyda_f_setcc),
+         mk_cases(200, ~0ull, ~0ull, 0, 0));
+run_diff("f_switch", f_switch, reinterpret_cast<uintptr_t>(__stop_hyda_f_switch),
+         mk_cases(64, 7, 0, 0, 0));
 
-  test_simd_roundtrip();
-  test_const_blinding();
-
-  std::printf("\n[1] Hand-written x86-64 functions (native == VM)\n");
-  run_diff("f_alu", f_alu, reinterpret_cast<uintptr_t>(__stop_hyda_f_alu),
-           mk_cases(200, ~0ull, ~0ull, ~0ull, ~0ull));
-  run_diff("f_cmp", f_cmp, reinterpret_cast<uintptr_t>(__stop_hyda_f_cmp),
-           mk_cases(200, ~0ull, ~0ull, 0, 0));
-  run_diff("f_loop", f_loop, reinterpret_cast<uintptr_t>(__stop_hyda_f_loop),
-           mk_cases(80, 3000, 0, 0, 0));
-  run_diff("f_alu_jcc", f_alu_jcc,
-           reinterpret_cast<uintptr_t>(__stop_hyda_f_alu_jcc),
-           mk_cases(200, 64, ~0ull, 0, 0));
-  run_diff("f_shift", f_shift, reinterpret_cast<uintptr_t>(__stop_hyda_f_shift),
-           mk_cases(200, ~0ull, ~0ull, ~0ull, 0));
-  run_diff("f_extend", f_extend, reinterpret_cast<uintptr_t>(__stop_hyda_f_extend),
-           mk_cases(200, ~0ull, ~0ull, 0, 0));
-  run_diff("f_div", f_div, reinterpret_cast<uintptr_t>(__stop_hyda_f_div),
-           mk_cases(200, ~0ull, 0xFFFF, 0, 0),
-           [](const Case& c) { return c.b == 0; });
-  run_diff("f_call", f_call, reinterpret_cast<uintptr_t>(__stop_hyda_f_call),
-           mk_cases(200, ~0ull, ~0ull, 0, 0));
-  run_diff("f_32bit", f_32bit, reinterpret_cast<uintptr_t>(__stop_hyda_f_32bit),
-           mk_cases(200, ~0ull, ~0ull, ~0ull, 0));
-  run_diff("f_test32", f_test32, reinterpret_cast<uintptr_t>(__stop_hyda_f_test32),
-           mk_cases(200, ~0ull, ~0ull, 0, 0));
-  run_diff("f_imul_lea", f_imul_lea, reinterpret_cast<uintptr_t>(__stop_hyda_f_imul_lea),
-           mk_cases(200, ~0ull, ~0ull, ~0ull, 0));
-  run_diff("f_cmov32", f_cmov32, reinterpret_cast<uintptr_t>(__stop_hyda_f_cmov32),
-           mk_cases(200, ~0ull, 0xFFFFFFFF, ~0ull, 0));
-  run_diff("f_cmov64", f_cmov64, reinterpret_cast<uintptr_t>(__stop_hyda_f_cmov64),
-           mk_cases(200, ~0ull, ~0ull, ~0ull, 0));
-  run_diff("f_setcc", f_setcc, reinterpret_cast<uintptr_t>(__stop_hyda_f_setcc),
-           mk_cases(200, ~0ull, ~0ull, 0, 0));
-  run_diff("f_switch", f_switch, reinterpret_cast<uintptr_t>(__stop_hyda_f_switch),
-           mk_cases(64, 7, 0, 0, 0));
-
-  {
-    static uint64_t sa[4], sb[4], sd[4];
-    const uintptr_t start = reinterpret_cast<uintptr_t>(f_mem);
-    LiftOptions opt;
-    opt.base_address = start;
-    opt.name = "f_mem";
-    const LiftResult r = lift_x86_64(reinterpret_cast<const uint8_t*>(start),
-                                     static_cast<size_t>(
-                                         reinterpret_cast<uintptr_t>(__stop_hyda_f_mem) - start),
-                                     opt);
-    ck(r.ok, std::string("f_mem: lift basarili (") + r.error + ")");
-    if (r.ok) {
-      IRProgram prog = r.prog;
-      ir_wrap_callable(prog);
-      Asm a;
-      const CodegenResult cg = ir_codegen(prog, a);
-      ck(cg.ok, std::string("f_mem: bytecode uretildi (") + cg.error + ")");
-      if (cg.ok) {
-        int bad = 0;
-        uint64_t s = 0xDEADBEEFCAFEBABEull;
-        for (int i = 0; i < 200; ++i) {
-          sa[0] = splitmix64(s);
-          sb[0] = splitmix64(s);
-          sd[0] = 0;
-          const uint64_t want = f_mem(reinterpret_cast<uint64_t>(sa),
-                                      reinterpret_cast<uint64_t>(sb),
-                                      reinterpret_cast<uint64_t>(sd), 0);
-          const VmCall got = vm_run(a, cg.entry_offset,
-                                    reinterpret_cast<uint64_t>(sa),
+{
+  static uint64_t sa[4], sb[4], sd[4];
+  const uintptr_t start = reinterpret_cast<uintptr_t>(f_mem);
+  LiftOptions opt;
+  opt.base_address = start;
+  opt.name = "f_mem";
+  const LiftResult r = lift_x86_64(reinterpret_cast<const uint8_t*>(start),
+                                   static_cast<size_t>(
+                                       reinterpret_cast<uintptr_t>(__stop_hyda_f_mem) - start),
+                                   opt);
+  ck(r.ok, std::string("f_mem: lift basarili (") + r.error + ")");
+  if (r.ok) {
+    IRProgram prog = r.prog;
+    ir_wrap_callable(prog);
+    Asm a;
+    const CodegenResult cg = ir_codegen(prog, a);
+    ck(cg.ok, std::string("f_mem: bytecode uretildi (") + cg.error + ")");
+    if (cg.ok) {
+      int bad = 0;
+      uint64_t s = 0xDEADBEEFCAFEBABEull;
+      for (int i = 0; i < 200; ++i) {
+        sa[0] = splitmix64(s);
+        sb[0] = splitmix64(s);
+        sd[0] = 0;
+        const uint64_t want = f_mem(reinterpret_cast<uint64_t>(sa),
                                     reinterpret_cast<uint64_t>(sb),
                                     reinterpret_cast<uint64_t>(sd), 0);
-          if (got.status != ST_HALT || got.ret != want || sd[0] != want) ++bad;
-        }
-        ck(bad == 0, "f_mem: 200 inputs (load/add/store) native == VM");
-        std::printf("  %s  %-12s %3d inputs, %zu x86 insns -> %zu bytes bytecode\n",
-                    bad == 0 ? "OK  " : "FAIL", "f_mem", 200, r.decoded, cg.code_size);
+        const VmCall got = vm_run(a, cg.entry_offset,
+                                  reinterpret_cast<uint64_t>(sa),
+                                  reinterpret_cast<uint64_t>(sb),
+                                  reinterpret_cast<uint64_t>(sd), 0);
+        if (got.status != ST_HALT || got.ret != want || sd[0] != want) ++bad;
+      }
+      ck(bad == 0, "f_mem: 200 inputs (load/add/store) native == VM");
+      std::printf("  %s  %-12s %3d inputs, %zu x86 insns -> %zu bytes bytecode\n",
+                  bad == 0 ? "OK  " : "FAIL", "f_mem", 200, r.decoded, cg.code_size);
+    }
+  }
+}
+}
+
+// Real gcc output: c_run wraps a loop, a branch and a multiply.
+HYDA_TEST(Int, compiler_output, "Compiler -O2 bodies lifted from a real object") {
+  g_rep = &r;
+run_diff("c_run", c_run, reinterpret_cast<uintptr_t>(__stop_hyda_c3),
+         mk_cases(300, ~0ull, 0xFFFF, ~0ull, 0));
+}
+
+// One-operand and two-operand forms; compares CF/OF/ZF.
+HYDA_TEST(MulDiv, sized_mul_div, "8/16/32-bit mul, imul, div and idiv with flags") {
+  g_rep = &r;
+{
+
+  const std::vector<Case> mc = mk_cases(300, ~0ull, ~0ull, 0, 0);
+  run_diff_out("f_mul8", f_mul8, reinterpret_cast<uintptr_t>(__stop_hyda_f_mul8),
+               mc, mask_cf_of);
+  run_diff_out("f_imul1_8", f_imul1_8, reinterpret_cast<uintptr_t>(__stop_hyda_f_imul1_8),
+               mc, mask_cf_of);
+  run_diff_out("f_mul16", f_mul16, reinterpret_cast<uintptr_t>(__stop_hyda_f_mul16),
+               mc, mask_cf_of);
+  run_diff_out("f_imul1_16", f_imul1_16, reinterpret_cast<uintptr_t>(__stop_hyda_f_imul1_16),
+               mc, mask_cf_of);
+  run_diff_out("f_mul32", f_mul32, reinterpret_cast<uintptr_t>(__stop_hyda_f_mul32),
+               mc, mask_cf_of);
+  run_diff_out("f_imul1_32", f_imul1_32, reinterpret_cast<uintptr_t>(__stop_hyda_f_imul1_32),
+               mc, mask_cf_of);
+  run_diff_out("f_imul2_16", f_imul2_16, reinterpret_cast<uintptr_t>(__stop_hyda_f_imul2_16),
+               mc, mask_cf_of);
+  run_diff_out("f_imul2_32", f_imul2_32, reinterpret_cast<uintptr_t>(__stop_hyda_f_imul2_32),
+               mc, mask_cf_of);
+
+  run_diff_out("f_div32", f_div32, reinterpret_cast<uintptr_t>(__stop_hyda_f_div32),
+               mc, mask_none, [](const Case& c) {
+                 const uint64_t d = static_cast<uint32_t>(c.b);
+                 if (d == 0) return true;
+                 return (c.a >> 32) >= d;
+               });
+  run_diff_out("f_idiv32", f_idiv32, reinterpret_cast<uintptr_t>(__stop_hyda_f_idiv32),
+               mc, mask_none, [](const Case& c) {
+                 const int32_t b = static_cast<int32_t>(static_cast<uint32_t>(c.b));
+                 if (b == 0) return true;
+
+                 return static_cast<int32_t>(static_cast<uint32_t>(c.a)) == INT32_MIN && b == -1;
+               });
+  run_diff_out("f_div16", f_div16, reinterpret_cast<uintptr_t>(__stop_hyda_f_div16),
+               mc, mask_none, [](const Case& c) { return (c.b & 0xffffu) == 0; });
+  run_diff_out("f_idiv16", f_idiv16, reinterpret_cast<uintptr_t>(__stop_hyda_f_idiv16),
+               mc, mask_none, [](const Case& c) {
+                 const int32_t b = static_cast<int16_t>(c.b & 0xffffu);
+                 if (b == 0) return true;
+                 const int32_t q = static_cast<int32_t>(c.a & 0xffffu) / b;
+                 return q < -32768 || q > 32767;
+               });
+}
+}
+
+// Flags that survive the body must still match native.
+HYDA_TEST(Flags, dead_elimination, "Dead-flag elimination keeps the observable flags") {
+  g_rep = &r;
+{
+  const std::vector<Case> dc = mk_cases(200, ~0ull, ~0ull, 0, 0);
+  size_t df = 0, dd = 0;
+  run_diff_out("f_dead_add", f_dead_add,
+               reinterpret_cast<uintptr_t>(__stop_hyda_f_dead_add), dc,
+               mask_all5, nullptr, &df, &dd);
+  ck(df >= 1, "f_dead_add: dead flag command found (elimination applied)");
+  ck(dd == 0, "f_dead_add: a result-producing command must NOT be removed");
+
+  df = dd = 0;
+  run_diff_out("f_dead_cmp", f_dead_cmp,
+               reinterpret_cast<uintptr_t>(__stop_hyda_f_dead_cmp), dc,
+               mask_all5, nullptr, &df, &dd);
+  ck(df >= 1, "f_dead_cmp: dead flag CMP found");
+  ck(dd >= 1, "f_dead_cmp: dead flag-only command REMOVED");
+
+  df = dd = 0;
+  run_diff_out("f_live_add", f_live_add,
+               reinterpret_cast<uintptr_t>(__stop_hyda_f_live_add), dc,
+               mask_all5, nullptr, &df, &dd);
+  std::printf("  OK  %-12s live ADD (setcc reads); instructions marked dead: %zu\n",
+              "f_live_add", df);
+}
+}
+
+// Counters read the same result and ZF as the host CPU.
+HYDA_TEST(Bits, count_ops, "tzcnt/lzcnt/popcnt with ZF") {
+  g_rep = &r;
+{
+  const std::vector<Case> bc = mk_cases(300, ~0ull, ~0ull, 0, 0);
+
+  if (__builtin_cpu_supports("bmi")) {
+    run_diff_out("f_tzcnt32", f_tzcnt32, reinterpret_cast<uintptr_t>(__stop_hyda_f_tzcnt32),
+                 bc, mask_cf_zf);
+    run_diff_out("f_tzcnt64", f_tzcnt64, reinterpret_cast<uintptr_t>(__stop_hyda_f_tzcnt64),
+                 bc, mask_cf_zf);
+    run_diff_out("f_tzcnt16", f_tzcnt16, reinterpret_cast<uintptr_t>(__stop_hyda_f_tzcnt16),
+                 bc, mask_cf_zf);
+    run_diff_out("f_lzcnt32", f_lzcnt32, reinterpret_cast<uintptr_t>(__stop_hyda_f_lzcnt32),
+                 bc, mask_cf_zf);
+    run_diff_out("f_lzcnt64", f_lzcnt64, reinterpret_cast<uintptr_t>(__stop_hyda_f_lzcnt64),
+                 bc, mask_cf_zf);
+  } else {
+    std::printf("  SKIP  tzcnt/lzcnt: no BMI on this CPU\n");
+  }
+  if (__builtin_cpu_supports("popcnt")) {
+    run_diff_out("f_popcnt32", f_popcnt32, reinterpret_cast<uintptr_t>(__stop_hyda_f_popcnt32),
+                 bc, mask_zf);
+    run_diff_out("f_popcnt64", f_popcnt64, reinterpret_cast<uintptr_t>(__stop_hyda_f_popcnt64),
+                 bc, mask_zf);
+  } else {
+    std::printf("  SKIP  popcnt: no POPCNT on this CPU\n");
+  }
+}
+}
+
+// Registers the body never writes may stay untouched.
+HYDA_TEST(Trampoline, written_regs, "Body write tracking drives the trampoline save mask") {
+  g_rep = &r;
+{
+
+  auto written = [](uintptr_t start, uintptr_t end) -> uint16_t {
+    LiftOptions o;
+    o.base_address = start;
+    o.name = "yazilan";
+    return lift_x86_64(reinterpret_cast<const uint8_t*>(start), end - start, o)
+        .written_regs;
+  };
+  const uint16_t wa = written(reinterpret_cast<uintptr_t>(f_alu),
+                              reinterpret_cast<uintptr_t>(__stop_hyda_f_alu));
+  ck((wa & (1u << REG_RAX)) != 0, "f_alu: rax 'yaziliyor' isaretlendi");
+  ck((wa & ((1u << REG_RCX) | (1u << REG_RDX))) == 0,
+     "f_alu: rcx/rdx 'korunuyor' isaretlendi");
+
+  const uint16_t ww = written(reinterpret_cast<uintptr_t>(f_writes),
+                              reinterpret_cast<uintptr_t>(__stop_hyda_f_writes));
+  ck((ww & ((1u << REG_RAX) | (1u << REG_RDX))) ==
+         ((1u << REG_RAX) | (1u << REG_RDX)),
+     "f_writes: rax+rdx yaziliyor");
+  ck((ww & ((1u << REG_RCX) | (1u << REG_R8) | (1u << REG_R9) |
+            (1u << REG_R10) | (1u << REG_R11))) == 0,
+     "f_writes: rcx/r8-r11 korunuyor (trampolinde saklanacak)");
+  std::printf("  OK    f_alu written=%#x, f_writes written=%#x\n", wa, ww);
+}
+}
+
+// Instructions the VM cannot express run as encrypted islands.
+HYDA_TEST(Gate, call_gate, "Native gate: SSE, AVX, x87, CPUID, indirect call, XMM arg, tail") {
+  g_rep = &r;
+{
+  gate_section();
+}
+}
+
+// The island area is never valid while the VM is idle.
+HYDA_TEST(Island, encryption, "Island bytes decrypt at the gate and re-encrypt on exit") {
+  g_rep = &r;
+{
+  island_crypt_section();
+}
+}
+
+// Placed islands move around between builds.
+HYDA_TEST(Island, layout, "Island layout diversity: order, gaps, junk, leave") {
+  g_rep = &r;
+{
+  island_layout_section();
+}
+}
+
+// Equivalent encodings are generated per island.
+HYDA_TEST(Island, meta, "Metamorphic re-encoding of island bytes") {
+  g_rep = &r;
+{
+  island_meta_section();
+}
+}
+
+// Decoys must not decrypt to a working island.
+HYDA_TEST(Island, decoys, "Decoy islands look valid but carry encrypted content") {
+  g_rep = &r;
+{
+  island_decoy_section();
+}
+}
+
+// The runtime rewrites island bodies after each gate.
+HYDA_TEST(Island, reencode, "Runtime re-encoding of islands") {
+  g_rep = &r;
+{
+  island_mut_section();
+}
+}
+
+// Mutation on and off must produce the same answers.
+HYDA_TEST(Mutate, engine, "Mutation engine: junk, noise and inverse keep results equal") {
+  g_rep = &r;
+{
+  const uintptr_t start = reinterpret_cast<uintptr_t>(f_alu);
+  const size_t size =
+      static_cast<size_t>(reinterpret_cast<uintptr_t>(__stop_hyda_f_alu) - start);
+  const std::vector<Case> cases = mk_cases(120, ~0ull, ~0ull, ~0ull, ~0ull);
+
+  auto count_op = [](const Asm& a, Op want) -> int {
+    int n = 0;
+    size_t off = 0;
+    while (off < a.code.size()) {
+      const uint16_t slot = static_cast<uint16_t>(
+          a.code[off] | (static_cast<uint16_t>(a.code[off + 1]) << 8));
+      const uint16_t op = opcode_map().op_of_slot[slot];
+      if (op == BAD_SLOT) return -1;
+      if (op == static_cast<uint16_t>(want)) ++n;
+      off += kHeaderBytes + op_size(static_cast<Op>(op));
+    }
+    return off == a.code.size() ? n : -1;
+  };
+
+  auto build = [&](bool mutate) {
+    LiftOptions o;
+    o.base_address = start;
+    o.name = "f_alu";
+    o.mutate = mutate;
+    return lift_x86_64(reinterpret_cast<const uint8_t*>(start), size, o);
+  };
+
+  const LiftResult mon = build(true);
+  const LiftResult moff = build(false);
+  ck(mon.ok && moff.ok, "f_alu: lift (mutation on/off)");
+  if (mon.ok && moff.ok) {
+    ck(mon.mutate.junk > 0 && mon.mutate.noise > 0 && mon.mutate.inv_r > 0,
+       "f_alu: mutation stats populated (junk/noise/inverse)");
+    ck(moff.mutate.cmds_after == moff.mutate.cmds_before &&
+           moff.mutate.junk == 0 && moff.mutate.noise == 0 &&
+           moff.mutate.inv_r == 0,
+       "f_alu: mutation off -> zero stats, same command count");
+
+    IRProgram po = mon.prog;
+    IRProgram pf = moff.prog;
+    ir_wrap_callable(po);
+    ir_wrap_callable(pf);
+    Asm ao, af;
+    const CodegenResult cgo = ir_codegen(po, ao);
+    const CodegenResult cgf = ir_codegen(pf, af);
+    ck(cgo.ok && cgf.ok, "f_alu: codegen (mutation on/off)");
+
+    const int junk_o = count_op(ao, Op::VM_JUNK);
+    const int noise_o = count_op(ao, Op::VM_NOISE);
+    const int inv_o = count_op(ao, Op::INV_R);
+    const int junk_f = count_op(af, Op::VM_JUNK);
+    const int noise_f = count_op(af, Op::VM_NOISE);
+    const int inv_f = count_op(af, Op::INV_R);
+    ck(junk_o > 0, "f_alu: mutation ON -> VM_JUNK in bytecode");
+    ck(noise_o > 0, "f_alu: mutation ON -> VM_NOISE in bytecode");
+    ck(inv_o > 0, "f_alu: mutation ON -> INV_R in bytecode");
+    ck(junk_f == 0 && noise_f == 0 && inv_f == 0,
+       "f_alu: mutation OFF -> no mutation opcode");
+    ck(ao.code.size() > af.code.size(), "f_alu: mutation grows the bytecode");
+
+    int bad = 0;
+    for (const Case& cs : cases) {
+      const uint64_t want = f_alu(cs.a, cs.b, cs.c, cs.d);
+      const VmCall g1 = vm_run(ao, cgo.entry_offset, cs.a, cs.b, cs.c, cs.d);
+      const VmCall g2 = vm_run(af, cgf.entry_offset, cs.a, cs.b, cs.c, cs.d);
+      if (g1.status != ST_HALT || g1.ret != want || g2.status != ST_HALT ||
+          g2.ret != want) {
+        ++bad;
       }
     }
+    ck(bad == 0, "f_alu: mutation ON/OFF result == native");
+    std::printf("  %s  f_alu: %d junk, %d noise, %d inverse; %zu -> %zu bytes\n",
+                bad == 0 ? "OK  " : "FAIL", junk_o, noise_o, inv_o,
+                af.code.size(), ao.code.size());
   }
+}
+}
 
-  std::printf("\n[2] Real compiler output (-O2 C functions)\n");
-  run_diff("c_run", c_run, reinterpret_cast<uintptr_t>(__stop_hyda_c3),
-           mk_cases(300, ~0ull, 0xFFFF, ~0ull, 0));
+// Prints decoded/IR counts; never fails.
+HYDA_TEST(Report, corpus, "Informational lift coverage of the C corpus") {
+  g_rep = &r;
+coverage("c_sum_step", c_sum_step, reinterpret_cast<uintptr_t>(__stop_hyda_c1));
+coverage("c_mix", c_mix, reinterpret_cast<uintptr_t>(__stop_hyda_c2));
+coverage("c_run", c_run, reinterpret_cast<uintptr_t>(__stop_hyda_c3));
 
-  std::printf("\n[3] Sized multiply/divide (8/16/32-bit) + flags\n");
-  {
+}
 
-    const std::vector<Case> mc = mk_cases(300, ~0ull, ~0ull, 0, 0);
-    run_diff_out("f_mul8", f_mul8, reinterpret_cast<uintptr_t>(__stop_hyda_f_mul8),
-                 mc, mask_cf_of);
-    run_diff_out("f_imul1_8", f_imul1_8, reinterpret_cast<uintptr_t>(__stop_hyda_f_imul1_8),
-                 mc, mask_cf_of);
-    run_diff_out("f_mul16", f_mul16, reinterpret_cast<uintptr_t>(__stop_hyda_f_mul16),
-                 mc, mask_cf_of);
-    run_diff_out("f_imul1_16", f_imul1_16, reinterpret_cast<uintptr_t>(__stop_hyda_f_imul1_16),
-                 mc, mask_cf_of);
-    run_diff_out("f_mul32", f_mul32, reinterpret_cast<uintptr_t>(__stop_hyda_f_mul32),
-                 mc, mask_cf_of);
-    run_diff_out("f_imul1_32", f_imul1_32, reinterpret_cast<uintptr_t>(__stop_hyda_f_imul1_32),
-                 mc, mask_cf_of);
-    run_diff_out("f_imul2_16", f_imul2_16, reinterpret_cast<uintptr_t>(__stop_hyda_f_imul2_16),
-                 mc, mask_cf_of);
-    run_diff_out("f_imul2_32", f_imul2_32, reinterpret_cast<uintptr_t>(__stop_hyda_f_imul2_32),
-                 mc, mask_cf_of);
-
-    run_diff_out("f_div32", f_div32, reinterpret_cast<uintptr_t>(__stop_hyda_f_div32),
-                 mc, mask_none, [](const Case& c) {
-                   const uint64_t d = static_cast<uint32_t>(c.b);
-                   if (d == 0) return true;
-                   return (c.a >> 32) >= d;
-                 });
-    run_diff_out("f_idiv32", f_idiv32, reinterpret_cast<uintptr_t>(__stop_hyda_f_idiv32),
-                 mc, mask_none, [](const Case& c) {
-                   const int32_t b = static_cast<int32_t>(static_cast<uint32_t>(c.b));
-                   if (b == 0) return true;
-
-                   return static_cast<int32_t>(static_cast<uint32_t>(c.a)) == INT32_MIN && b == -1;
-                 });
-    run_diff_out("f_div16", f_div16, reinterpret_cast<uintptr_t>(__stop_hyda_f_div16),
-                 mc, mask_none, [](const Case& c) { return (c.b & 0xffffu) == 0; });
-    run_diff_out("f_idiv16", f_idiv16, reinterpret_cast<uintptr_t>(__stop_hyda_f_idiv16),
-                 mc, mask_none, [](const Case& c) {
-                   const int32_t b = static_cast<int16_t>(c.b & 0xffffu);
-                   if (b == 0) return true;
-                   const int32_t q = static_cast<int32_t>(c.a & 0xffffu) / b;
-                   return q < -32768 || q > 32767;
-                 });
+// Full YMM file survives save_simd/restore_simd across a call.
+HYDA_TEST(Simd, ymm_roundtrip, "YMM save/restore keeps all 256 bits") {
+  g_rep = &r;
+  if (!hyda::fp_supports_avx()) {
+    HYDA_CHECK_MSG(r, true, "skipped: no AVX");
+    return;
   }
+  alignas(32) uint64_t pat[4], out[4];
+  for (int i = 0; i < 4; ++i) pat[i] = 0xC0DE0000C0DE0000ull + static_cast<uint64_t>(i);
+  std::memset(out, 0, sizeof(out));
 
-  std::printf("\n[3b] Stage 7b: dead flag elimination (flags match native)\n");
-  {
-    const std::vector<Case> dc = mk_cases(200, ~0ull, ~0ull, 0, 0);
-    size_t df = 0, dd = 0;
-    run_diff_out("f_dead_add", f_dead_add,
-                 reinterpret_cast<uintptr_t>(__stop_hyda_f_dead_add), dc,
-                 mask_all5, nullptr, &df, &dd);
-    ck(df >= 1, "f_dead_add: dead flag command found (elimination applied)");
-    ck(dd == 0, "f_dead_add: a result-producing command must NOT be removed");
+  simd_roundtrip_probe(reinterpret_cast<uint64_t>(pat), reinterpret_cast<uint64_t>(out),
+                       reinterpret_cast<uint64_t>(&hyda_vm_save_simd),
+                       reinterpret_cast<uint64_t>(&hyda_vm_restore_simd));
 
-    df = dd = 0;
-    run_diff_out("f_dead_cmp", f_dead_cmp,
-                 reinterpret_cast<uintptr_t>(__stop_hyda_f_dead_cmp), dc,
-                 mask_all5, nullptr, &df, &dd);
-    ck(df >= 1, "f_dead_cmp: dead flag CMP found");
-    ck(dd >= 1, "f_dead_cmp: dead flag-only command REMOVED");
+  bool ok = true;
+  for (int i = 0; i < 4; ++i) ok = ok && (out[i] == pat[i]);
+  ck(ok, "simd save/restore preserves full YMM");
+}
 
-    df = dd = 0;
-    run_diff_out("f_live_add", f_live_add,
-                 reinterpret_cast<uintptr_t>(__stop_hyda_f_live_add), dc,
-                 mask_all5, nullptr, &df, &dd);
-    std::printf("  OK  %-12s live ADD (setcc reads); instructions marked dead: %zu\n",
-                "f_live_add", df);
+// Immediates are blinded, so a 64-bit constant must not appear verbatim.
+HYDA_TEST(Codec, const_blinding, "Immediate constants are not emitted literally") {
+  g_rep = &r;
+  const uint64_t k = 0x1122334455667788ull;
+  IRProgram p;
+  p.add(IRCommand::mov(IROperand::R(REG_RAX), IROperand::I(static_cast<int64_t>(k))));
+  p.add(IRCommand::none(IROp::Halt));
+  Asm a;
+  const CodegenResult cg = ir_codegen(p, a);
+  ck(cg.ok, std::string("const blind: codegen (") + cg.error + ")");
+  if (!cg.ok) return;
+
+  bool found = false;
+  for (size_t i = 0; i + 8 <= a.code.size(); ++i) {
+    uint64_t v = 0;
+    std::memcpy(&v, &a.code[i], 8);
+    if (v == k) { found = true; break; }
   }
+  ck(!found, "const blind: immediate not emitted literally");
+}
 
-  std::printf("\n[4] tzcnt / lzcnt / popcnt (flags included)\n");
-  {
-    const std::vector<Case> bc = mk_cases(300, ~0ull, ~0ull, 0, 0);
+#define HYDA_SHIFT_BODY(FN, SEC, SZ, SHLSHR)                                   \
+  g_rep = &r;                                                                  \
+  const std::vector<Case> sc = mk_shift_cases();                               \
+  run_diff_out(#FN, FN, reinterpret_cast<uintptr_t>(__stop_##SEC), sc,         \
+               [](const Case& c) {                                            \
+                 return shift_mask(                                           \
+                     static_cast<unsigned>(c.b & 0xffu) & (SZ == 64 ? 63u : 31u), \
+                     (unsigned)SZ, SHLSHR);                                   \
+               })
 
-    if (__builtin_cpu_supports("bmi")) {
-      run_diff_out("f_tzcnt32", f_tzcnt32, reinterpret_cast<uintptr_t>(__stop_hyda_f_tzcnt32),
-                   bc, mask_cf_zf);
-      run_diff_out("f_tzcnt64", f_tzcnt64, reinterpret_cast<uintptr_t>(__stop_hyda_f_tzcnt64),
-                   bc, mask_cf_zf);
-      run_diff_out("f_tzcnt16", f_tzcnt16, reinterpret_cast<uintptr_t>(__stop_hyda_f_tzcnt16),
-                   bc, mask_cf_zf);
-      run_diff_out("f_lzcnt32", f_lzcnt32, reinterpret_cast<uintptr_t>(__stop_hyda_f_lzcnt32),
-                   bc, mask_cf_zf);
-      run_diff_out("f_lzcnt64", f_lzcnt64, reinterpret_cast<uintptr_t>(__stop_hyda_f_lzcnt64),
-                   bc, mask_cf_zf);
-    } else {
-      std::printf("  SKIP  tzcnt/lzcnt: no BMI on this CPU\n");
-    }
-    if (__builtin_cpu_supports("popcnt")) {
-      run_diff_out("f_popcnt32", f_popcnt32, reinterpret_cast<uintptr_t>(__stop_hyda_f_popcnt32),
-                   bc, mask_zf);
-      run_diff_out("f_popcnt64", f_popcnt64, reinterpret_cast<uintptr_t>(__stop_hyda_f_popcnt64),
-                   bc, mask_zf);
-    } else {
-      std::printf("  SKIP  popcnt: no POPCNT on this CPU\n");
-    }
+// SHL r8, CL: value plus CF/SF/ZF/PF for every count 0..255.
+HYDA_TEST(Shift, shl8, "SHL r8, CL") { HYDA_SHIFT_BODY(f_shl8, hyda_f_shl8, 8, true); }
+// SHL r16, CL.
+HYDA_TEST(Shift, shl16, "SHL r16, CL") { HYDA_SHIFT_BODY(f_shl16, hyda_f_shl16, 16, true); }
+// SHL r32, CL.
+HYDA_TEST(Shift, shl32, "SHL r32, CL") { HYDA_SHIFT_BODY(f_shl32, hyda_f_shl32, 32, true); }
+// SHL r64, CL.
+HYDA_TEST(Shift, shl64, "SHL r64, CL") { HYDA_SHIFT_BODY(f_shl64, hyda_f_shl64, 64, true); }
+// SHR r8, CL.
+HYDA_TEST(Shift, shr8, "SHR r8, CL") { HYDA_SHIFT_BODY(f_shr8, hyda_f_shr8, 8, true); }
+// SHR r16, CL.
+HYDA_TEST(Shift, shr16, "SHR r16, CL") { HYDA_SHIFT_BODY(f_shr16, hyda_f_shr16, 16, true); }
+// SHR r32, CL.
+HYDA_TEST(Shift, shr32, "SHR r32, CL") { HYDA_SHIFT_BODY(f_shr32, hyda_f_shr32, 32, true); }
+// SHR r64, CL.
+HYDA_TEST(Shift, shr64, "SHR r64, CL") { HYDA_SHIFT_BODY(f_shr64, hyda_f_shr64, 64, true); }
+// SAR r8, CL.
+HYDA_TEST(Shift, sar8, "SAR r8, CL") { HYDA_SHIFT_BODY(f_sar8, hyda_f_sar8, 8, false); }
+// SAR r16, CL.
+HYDA_TEST(Shift, sar16, "SAR r16, CL") { HYDA_SHIFT_BODY(f_sar16, hyda_f_sar16, 16, false); }
+// SAR r32, CL.
+HYDA_TEST(Shift, sar32, "SAR r32, CL") { HYDA_SHIFT_BODY(f_sar32, hyda_f_sar32, 32, false); }
+// SAR r64, CL.
+HYDA_TEST(Shift, sar64, "SAR r64, CL") { HYDA_SHIFT_BODY(f_sar64, hyda_f_sar64, 64, false); }
+// ROL r8, CL.
+HYDA_TEST(Shift, rol8, "ROL r8, CL") { HYDA_SHIFT_BODY(f_rol8, hyda_f_rol8, 8, false); }
+// ROL r16, CL.
+HYDA_TEST(Shift, rol16, "ROL r16, CL") { HYDA_SHIFT_BODY(f_rol16, hyda_f_rol16, 16, false); }
+// ROL r32, CL.
+HYDA_TEST(Shift, rol32, "ROL r32, CL") { HYDA_SHIFT_BODY(f_rol32, hyda_f_rol32, 32, false); }
+// ROL r64, CL.
+HYDA_TEST(Shift, rol64, "ROL r64, CL") { HYDA_SHIFT_BODY(f_rol64, hyda_f_rol64, 64, false); }
+// ROR r8, CL.
+HYDA_TEST(Shift, ror8, "ROR r8, CL") { HYDA_SHIFT_BODY(f_ror8, hyda_f_ror8, 8, false); }
+// ROR r16, CL.
+HYDA_TEST(Shift, ror16, "ROR r16, CL") { HYDA_SHIFT_BODY(f_ror16, hyda_f_ror16, 16, false); }
+// ROR r32, CL.
+HYDA_TEST(Shift, ror32, "ROR r32, CL") { HYDA_SHIFT_BODY(f_ror32, hyda_f_ror32, 32, false); }
+// ROR r64, CL.
+HYDA_TEST(Shift, ror64, "ROR r64, CL") { HYDA_SHIFT_BODY(f_ror64, hyda_f_ror64, 64, false); }
+
+#undef HYDA_SHIFT_BODY
+
+#define HYDA_DSHIFT_BODY(FN, SEC)                                              \
+  g_rep = &r;                                                                  \
+  run_diff_out(#FN, FN, reinterpret_cast<uintptr_t>(__stop_##SEC),             \
+               mk_shift_cases(), [](const Case&) { return 0x1Du; })
+
+#define HYDA_DSHIFT_IMM_BODY(FN, SEC)                                          \
+  g_rep = &r;                                                                  \
+  run_diff_out(#FN, FN, reinterpret_cast<uintptr_t>(__stop_##SEC),             \
+               mk_cases(200, ~0ull, ~0ull, 0, 0), [](const Case&) { return 0x1Du; })
+
+// SHLD r64, r64, CL: value and CF for every count, including the no-op 0.
+HYDA_TEST(DoubleShift, shld64, "SHLD r64, CL") { HYDA_DSHIFT_BODY(f_shld64, hyda_f_shld64); }
+// SHRD r64, r64, CL.
+HYDA_TEST(DoubleShift, shrd64, "SHRD r64, CL") { HYDA_DSHIFT_BODY(f_shrd64, hyda_f_shrd64); }
+// SHLD r32, r32, CL, including the zero-extended 32-bit write.
+HYDA_TEST(DoubleShift, shld32, "SHLD r32, CL") { HYDA_DSHIFT_BODY(f_shld32, hyda_f_shld32); }
+// SHRD r32, r32, CL.
+HYDA_TEST(DoubleShift, shrd32, "SHRD r32, CL") { HYDA_DSHIFT_BODY(f_shrd32, hyda_f_shrd32); }
+// SHLD with an imm8 count.
+HYDA_TEST(DoubleShift, shld64_imm, "SHLD r64, imm8") { HYDA_DSHIFT_IMM_BODY(f_shld64_imm, hyda_f_shld64_imm); }
+// SHRD with an imm8 count.
+HYDA_TEST(DoubleShift, shrd64_imm, "SHRD r64, imm8") { HYDA_DSHIFT_IMM_BODY(f_shrd64_imm, hyda_f_shrd64_imm); }
+// SHLD r32 with an imm8 count.
+HYDA_TEST(DoubleShift, shld32_imm, "SHLD r32, imm8") { HYDA_DSHIFT_IMM_BODY(f_shld32_imm, hyda_f_shld32_imm); }
+// SHRD r32 with an imm8 count.
+HYDA_TEST(DoubleShift, shrd32_imm, "SHRD r32, imm8") { HYDA_DSHIFT_IMM_BODY(f_shrd32_imm, hyda_f_shrd32_imm); }
+// Count 0 must leave the destination and every flag alone.
+HYDA_TEST(DoubleShift, shld32_zero, "SHLD r32, 0") { HYDA_DSHIFT_IMM_BODY(f_shld32_zero, hyda_f_shld32_zero); }
+// Count 0 for SHRD, same guarantee.
+HYDA_TEST(DoubleShift, shrd32_zero, "SHRD r32, 0") { HYDA_DSHIFT_IMM_BODY(f_shrd32_zero, hyda_f_shrd32_zero); }
+
+#undef HYDA_DSHIFT_BODY
+#undef HYDA_DSHIFT_IMM_BODY
+
+// Same bodies lifted under several mutation seeds: obfuscation must not change
+// a single result or clobber a live temporary.
+HYDA_TEST(DoubleShift, mutation_seeds, "SHLD/SHRD under 4 mutation seeds") {
+  g_rep = &r;
+  const uint64_t seeds[] = {0x1111111111111111ull, 0x2222222222222222ull,
+                            0xDEADBEEFCAFEBABEull, 0x9E3779B97F4A7C15ull};
+  const std::vector<Case> sc = mk_shift_cases();
+  for (uint64_t seed : seeds) {
+    run_diff_seeded("f_shld64", f_shld64, reinterpret_cast<uintptr_t>(__stop_hyda_f_shld64),
+                    sc, [](const Case&) { return 0x1Du; }, seed);
+    run_diff_seeded("f_shrd64", f_shrd64, reinterpret_cast<uintptr_t>(__stop_hyda_f_shrd64),
+                    sc, [](const Case&) { return 0x1Du; }, seed);
   }
+}
 
-  std::printf("\n[5] Register (CL) shift counts, count 0..255\n");
-  {
-    const std::vector<Case> sc = mk_shift_cases();
-#define HYDA_SHIFT_CASE(NAME, SEC, SZ, SHLSHR)                                \
-    run_diff_out(#NAME, NAME, reinterpret_cast<uintptr_t>(__stop_##SEC), sc,  \
-                 [](const Case& c) {                                          \
-                   return shift_mask(                                         \
-                       static_cast<unsigned>(c.b & 0xffu) & (SZ == 64 ? 63u : 31u), \
-                       (unsigned)SZ, SHLSHR);                                 \
-                 })
-    HYDA_SHIFT_CASE(f_shl8,  hyda_f_shl8,  8,  true);
-    HYDA_SHIFT_CASE(f_shl16, hyda_f_shl16, 16, true);
-    HYDA_SHIFT_CASE(f_shl32, hyda_f_shl32, 32, true);
-    HYDA_SHIFT_CASE(f_shl64, hyda_f_shl64, 64, true);
-    HYDA_SHIFT_CASE(f_shr8,  hyda_f_shr8,  8,  true);
-    HYDA_SHIFT_CASE(f_shr16, hyda_f_shr16, 16, true);
-    HYDA_SHIFT_CASE(f_shr32, hyda_f_shr32, 32, true);
-    HYDA_SHIFT_CASE(f_shr64, hyda_f_shr64, 64, true);
-    HYDA_SHIFT_CASE(f_sar8,  hyda_f_sar8,  8,  false);
-    HYDA_SHIFT_CASE(f_sar16, hyda_f_sar16, 16, false);
-    HYDA_SHIFT_CASE(f_sar32, hyda_f_sar32, 32, false);
-    HYDA_SHIFT_CASE(f_sar64, hyda_f_sar64, 64, false);
-    HYDA_SHIFT_CASE(f_rol8,  hyda_f_rol8,  8,  false);
-    HYDA_SHIFT_CASE(f_rol16, hyda_f_rol16, 16, false);
-    HYDA_SHIFT_CASE(f_rol32, hyda_f_rol32, 32, false);
-    HYDA_SHIFT_CASE(f_rol64, hyda_f_rol64, 64, false);
-    HYDA_SHIFT_CASE(f_ror8,  hyda_f_ror8,  8,  false);
-    HYDA_SHIFT_CASE(f_ror16, hyda_f_ror16, 16, false);
-    HYDA_SHIFT_CASE(f_ror32, hyda_f_ror32, 32, false);
-    HYDA_SHIFT_CASE(f_ror64, hyda_f_ror64, 64, false);
-#undef HYDA_SHIFT_CASE
-  }
-
-  std::printf("\n[5b] Double-precision shifts (SHLD/SHRD)\n");
-  {
-    const std::vector<Case> sc = mk_shift_cases();
-    auto ds_mask = [](const Case&) { return 0x1Du; };
-#define HYDA_DSHIFT_CASE(NAME, SEC)                                          \
-    run_diff_out(#NAME, NAME, reinterpret_cast<uintptr_t>(__stop_##SEC), sc, \
-                 ds_mask)
-    HYDA_DSHIFT_CASE(f_shld64, hyda_f_shld64);
-    HYDA_DSHIFT_CASE(f_shrd64, hyda_f_shrd64);
-    HYDA_DSHIFT_CASE(f_shld32, hyda_f_shld32);
-    HYDA_DSHIFT_CASE(f_shrd32, hyda_f_shrd32);
-#undef HYDA_DSHIFT_CASE
-
-    const std::vector<Case> ic = mk_cases(200, ~0ull, ~0ull, 0, 0);
-#define HYDA_DSHIFT_CASE(NAME, SEC)                                          \
-    run_diff_out(#NAME, NAME, reinterpret_cast<uintptr_t>(__stop_##SEC), ic, \
-                 ds_mask)
-    HYDA_DSHIFT_CASE(f_shld64_imm, hyda_f_shld64_imm);
-    HYDA_DSHIFT_CASE(f_shrd64_imm, hyda_f_shrd64_imm);
-    HYDA_DSHIFT_CASE(f_shld32_imm, hyda_f_shld32_imm);
-    HYDA_DSHIFT_CASE(f_shrd32_imm, hyda_f_shrd32_imm);
-    HYDA_DSHIFT_CASE(f_shld32_zero, hyda_f_shld32_zero);
-    HYDA_DSHIFT_CASE(f_shrd32_zero, hyda_f_shrd32_zero);
-#undef HYDA_DSHIFT_CASE
-  }
-
-  std::printf("\n[6] Registers written by the body (trampoline protection)\n");
-  {
-
-    auto written = [](uintptr_t start, uintptr_t end) -> uint16_t {
-      LiftOptions o;
-      o.base_address = start;
-      o.name = "yazilan";
-      return lift_x86_64(reinterpret_cast<const uint8_t*>(start), end - start, o)
-          .written_regs;
-    };
-    const uint16_t wa = written(reinterpret_cast<uintptr_t>(f_alu),
-                                reinterpret_cast<uintptr_t>(__stop_hyda_f_alu));
-    ck((wa & (1u << REG_RAX)) != 0, "f_alu: rax 'yaziliyor' isaretlendi");
-    ck((wa & ((1u << REG_RCX) | (1u << REG_RDX))) == 0,
-       "f_alu: rcx/rdx 'korunuyor' isaretlendi");
-
-    const uint16_t ww = written(reinterpret_cast<uintptr_t>(f_writes),
-                                reinterpret_cast<uintptr_t>(__stop_hyda_f_writes));
-    ck((ww & ((1u << REG_RAX) | (1u << REG_RDX))) ==
-           ((1u << REG_RAX) | (1u << REG_RDX)),
-       "f_writes: rax+rdx yaziliyor");
-    ck((ww & ((1u << REG_RCX) | (1u << REG_R8) | (1u << REG_R9) |
-              (1u << REG_R10) | (1u << REG_R11))) == 0,
-       "f_writes: rcx/r8-r11 korunuyor (trampolinde saklanacak)");
-    std::printf("  OK    f_alu written=%#x, f_writes written=%#x\n", wa, ww);
-  }
-
-  std::printf("\n[7] Native gate (call gate): SSE / x87 / CPUID / indirect call\n");
-  {
-    gate_section();
-  }
-
-  std::printf("\n[7b] Stage 8a: native island encryption (decrypt at gate, re-encrypt on exit)\n");
-  {
-    island_crypt_section();
-  }
-
-  std::printf("\n[7c] Stage 8b: island layout diversity (order/gaps/junk/leave)\n");
-  {
-    island_layout_section();
-  }
-
-  std::printf("\n[7d] Stage 8c: metamorphic re-encoding of island bytes\n");
-  {
-    island_meta_section();
-  }
-
-  std::printf("\n[7e] Stage 8d: decoy islands\n");
-  {
-    island_decoy_section();
-  }
-
-  std::printf("\n[7f] Stage 8s: runtime re-encoding of islands\n");
-  {
-    island_mut_section();
-  }
-
-  std::printf("\n[8] Mutation engine (Stage 4): junk / noise / inverse\n");
-  {
-    const uintptr_t start = reinterpret_cast<uintptr_t>(f_alu);
-    const size_t size =
-        static_cast<size_t>(reinterpret_cast<uintptr_t>(__stop_hyda_f_alu) - start);
-    const std::vector<Case> cases = mk_cases(120, ~0ull, ~0ull, ~0ull, ~0ull);
-
-    auto count_op = [](const Asm& a, Op want) -> int {
-      int n = 0;
-      size_t off = 0;
-      while (off < a.code.size()) {
-        const uint16_t slot = static_cast<uint16_t>(
-            a.code[off] | (static_cast<uint16_t>(a.code[off + 1]) << 8));
-        const uint16_t op = opcode_map().op_of_slot[slot];
-        if (op == BAD_SLOT) return -1;
-        if (op == static_cast<uint16_t>(want)) ++n;
-        off += kHeaderBytes + op_size(static_cast<Op>(op));
-      }
-      return off == a.code.size() ? n : -1;
-    };
-
-    auto build = [&](bool mutate) {
-      LiftOptions o;
-      o.base_address = start;
-      o.name = "f_alu";
-      o.mutate = mutate;
-      return lift_x86_64(reinterpret_cast<const uint8_t*>(start), size, o);
-    };
-
-    const LiftResult mon = build(true);
-    const LiftResult moff = build(false);
-    ck(mon.ok && moff.ok, "f_alu: lift (mutation on/off)");
-    if (mon.ok && moff.ok) {
-      ck(mon.mutate.junk > 0 && mon.mutate.noise > 0 && mon.mutate.inv_r > 0,
-         "f_alu: mutation stats populated (junk/noise/inverse)");
-      ck(moff.mutate.cmds_after == moff.mutate.cmds_before &&
-             moff.mutate.junk == 0 && moff.mutate.noise == 0 &&
-             moff.mutate.inv_r == 0,
-         "f_alu: mutation off -> zero stats, same command count");
-
-      IRProgram po = mon.prog;
-      IRProgram pf = moff.prog;
-      ir_wrap_callable(po);
-      ir_wrap_callable(pf);
-      Asm ao, af;
-      const CodegenResult cgo = ir_codegen(po, ao);
-      const CodegenResult cgf = ir_codegen(pf, af);
-      ck(cgo.ok && cgf.ok, "f_alu: codegen (mutation on/off)");
-
-      const int junk_o = count_op(ao, Op::VM_JUNK);
-      const int noise_o = count_op(ao, Op::VM_NOISE);
-      const int inv_o = count_op(ao, Op::INV_R);
-      const int junk_f = count_op(af, Op::VM_JUNK);
-      const int noise_f = count_op(af, Op::VM_NOISE);
-      const int inv_f = count_op(af, Op::INV_R);
-      ck(junk_o > 0, "f_alu: mutation ON -> VM_JUNK in bytecode");
-      ck(noise_o > 0, "f_alu: mutation ON -> VM_NOISE in bytecode");
-      ck(inv_o > 0, "f_alu: mutation ON -> INV_R in bytecode");
-      ck(junk_f == 0 && noise_f == 0 && inv_f == 0,
-         "f_alu: mutation OFF -> no mutation opcode");
-      ck(ao.code.size() > af.code.size(), "f_alu: mutation grows the bytecode");
-
-      int bad = 0;
-      for (const Case& cs : cases) {
-        const uint64_t want = f_alu(cs.a, cs.b, cs.c, cs.d);
-        const VmCall g1 = vm_run(ao, cgo.entry_offset, cs.a, cs.b, cs.c, cs.d);
-        const VmCall g2 = vm_run(af, cgf.entry_offset, cs.a, cs.b, cs.c, cs.d);
-        if (g1.status != ST_HALT || g1.ret != want || g2.status != ST_HALT ||
-            g2.ret != want) {
-          ++bad;
-        }
-      }
-      ck(bad == 0, "f_alu: mutation ON/OFF result == native");
-      std::printf("  %s  f_alu: %d junk, %d noise, %d inverse; %zu -> %zu bytes\n",
-                  bad == 0 ? "OK  " : "FAIL", junk_o, noise_o, inv_o,
-                  af.code.size(), ao.code.size());
-    }
-  }
-
-  std::printf("\n[9] Coverage report (informational)\n");
-  coverage("c_sum_step", c_sum_step, reinterpret_cast<uintptr_t>(__stop_hyda_c1));
-  coverage("c_mix", c_mix, reinterpret_cast<uintptr_t>(__stop_hyda_c2));
-  coverage("c_run", c_run, reinterpret_cast<uintptr_t>(__stop_hyda_c3));
-
-  std::printf("\nresult: %d checks, %d failures\n", g_checks, g_fails);
-  return g_fails == 0 ? 0 : 1;
+int main(int argc, char** argv) {
+  return hyda::test::Registry::instance().run(argc, argv);
 }
