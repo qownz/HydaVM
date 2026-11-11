@@ -566,32 +566,18 @@ HYDA_LEAVE_ALIAS(hyda_vm_gate_leave_c)
 
 #undef HYDA_LEAVE_ALIAS
 
-extern "C" void hyda_fp_save_helper(void) {
+extern "C" void hyda_fp_bind(void) {
   hyda_gate_fp_ensure();
-  hyda::HydaFpState* fp = hyda::fp_state();
-  __asm__ volatile("fxsave (%0)" ::"r"(fp) : "memory");
-  if (hyda_gate_avx) {
-    __asm__ volatile(
-        "vextractf128 $1, %%ymm0, 576(%0)\n"
-        "vextractf128 $1, %%ymm1, 592(%0)\n"
-        "vextractf128 $1, %%ymm2, 608(%0)\n"
-        "vextractf128 $1, %%ymm3, 624(%0)\n"
-        "vextractf128 $1, %%ymm4, 640(%0)\n"
-        "vextractf128 $1, %%ymm5, 656(%0)\n"
-        "vextractf128 $1, %%ymm6, 672(%0)\n"
-        "vextractf128 $1, %%ymm7, 688(%0)\n"
-        "vextractf128 $1, %%ymm8, 704(%0)\n"
-        "vextractf128 $1, %%ymm9, 720(%0)\n"
-        "vextractf128 $1, %%ymm10, 736(%0)\n"
-        "vextractf128 $1, %%ymm11, 752(%0)\n"
-        "vextractf128 $1, %%ymm12, 768(%0)\n"
-        "vextractf128 $1, %%ymm13, 784(%0)\n"
-        "vextractf128 $1, %%ymm14, 800(%0)\n"
-        "vextractf128 $1, %%ymm15, 816(%0)\n"
-        ::"r"(fp)
-        : "memory");
-  }
+  hyda_gate_fp_ptr = hyda::fp_state();
 }
+
+namespace {
+struct FpBinder {
+  FpBinder() { hyda_fp_bind(); }
+};
+const FpBinder g_fp_binder;
+}  // namespace
+
 extern "C" void hyda_fp_restore_helper(void) {
   hyda_gate_fp_ensure();
   hyda::HydaFpState* fp = hyda::fp_state();
@@ -623,9 +609,32 @@ HYDA_ENTRY __attribute__((naked, noinline)) void hyda_vm_save_simd(void) {
   __asm__(".intel_syntax noprefix\n"
           "push rax\n push rcx\n push rdx\n push r8\n"
           "push r9\n push r10\n push r11\n"
-          "sub rsp, 32\n"
-          "call hyda_fp_save_helper\n"
-          "add rsp, 32\n"
+          "mov r8, qword ptr [rip + hyda_gate_fp_ptr]\n"
+          "test r8, r8\n"
+          "jne 1f\n"
+          "call hyda_fp_bind\n"
+          "mov r8, qword ptr [rip + hyda_gate_fp_ptr]\n"
+          "1:\n"
+          "fxsave [r8]\n"
+          "cmp byte ptr [rip + hyda_gate_avx], 0\n"
+          "je 2f\n"
+          "vextractf128 [r8 + 576], ymm0, 1\n"
+          "vextractf128 [r8 + 592], ymm1, 1\n"
+          "vextractf128 [r8 + 608], ymm2, 1\n"
+          "vextractf128 [r8 + 624], ymm3, 1\n"
+          "vextractf128 [r8 + 640], ymm4, 1\n"
+          "vextractf128 [r8 + 656], ymm5, 1\n"
+          "vextractf128 [r8 + 672], ymm6, 1\n"
+          "vextractf128 [r8 + 688], ymm7, 1\n"
+          "vextractf128 [r8 + 704], ymm8, 1\n"
+          "vextractf128 [r8 + 720], ymm9, 1\n"
+          "vextractf128 [r8 + 736], ymm10, 1\n"
+          "vextractf128 [r8 + 752], ymm11, 1\n"
+          "vextractf128 [r8 + 768], ymm12, 1\n"
+          "vextractf128 [r8 + 784], ymm13, 1\n"
+          "vextractf128 [r8 + 800], ymm14, 1\n"
+          "vextractf128 [r8 + 816], ymm15, 1\n"
+          "2:\n"
           "pop r11\n pop r10\n pop r9\n pop r8\n"
           "pop rdx\n pop rcx\n pop rax\n"
           "ret\n .att_syntax prefix\n");
