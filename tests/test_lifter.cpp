@@ -2495,6 +2495,8 @@ HYDA_TEST(Simd, ymm_roundtrip, "YMM save/restore keeps all 256 bits") {
   for (int i = 0; i < 4; ++i) pat[i] = 0xC0DE0000C0DE0000ull + static_cast<uint64_t>(i);
   std::memset(out, 0, sizeof(out));
 
+  const hyda::HydaFpState* scratch = hyda::fp_state();
+  const uint64_t before0 = scratch->xmm(0)[0];
   simd_seed_ymm(pat, reinterpret_cast<uint64_t>(&hyda_vm_save_simd));
   const hyda::HydaFpState* saved = hyda::fp_state();
   const bool save_lo = saved->xmm(0)[0] == pat[0] && saved->xmm(0)[1] == pat[1];
@@ -2506,6 +2508,10 @@ HYDA_TEST(Simd, ymm_roundtrip, "YMM save/restore keeps all 256 bits") {
               static_cast<unsigned long long>(saved->xmm(0)[1]),
               static_cast<unsigned long long>(saved->ymm_hi(0)[0]),
               static_cast<unsigned long long>(saved->ymm_hi(0)[1]));
+  std::printf("     slot before=%#llx after=%#llx changed=%d\n",
+              static_cast<unsigned long long>(before0),
+              static_cast<unsigned long long>(saved->xmm(0)[0]),
+              before0 != saved->xmm(0)[0] ? 1 : 0);
   ck(save_lo && save_hi, "save_simd stores both YMM halves");
 
   simd_restore_store(reinterpret_cast<uint64_t>(out),
