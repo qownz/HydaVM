@@ -2478,6 +2478,14 @@ HYDA_TEST(Simd, ymm_roundtrip, "YMM save/restore keeps all 256 bits") {
 
   bool ok = true;
   for (int i = 0; i < 4; ++i) ok = ok && (out[i] == pat[i]);
+  if (!ok) {
+    for (int i = 0; i < 4; ++i) {
+      if (out[i] == pat[i]) continue;
+      std::printf("     lane %d: pat=%#llx out=%#llx\n", i,
+                  static_cast<unsigned long long>(pat[i]),
+                  static_cast<unsigned long long>(out[i]));
+    }
+  }
   ck(ok, "simd save/restore preserves full YMM");
 }
 
