@@ -1604,6 +1604,21 @@ static void gate_section() {
       ++n;
       if (gr.status != ST_HALT || ov != on || rv != rn || gr.ret != 7) ++bad;
     }
+    if (bad != 0) {
+      float arg = 3.25f, on = 0.0f, ov = 0.0f, rn = 0.0f, rv = 0.0f;
+      test_call_xmm0(reinterpret_cast<uint64_t>(f_xmmarg),
+                     reinterpret_cast<uint64_t>(&on),
+                     reinterpret_cast<uint64_t>(&arg),
+                     reinterpret_cast<uint64_t>(&rn));
+      simd_seed_xmm0(&arg, reinterpret_cast<uint64_t>(&hyda_vm_save_simd));
+      GatedCall gr = vm_run_gated(g, reinterpret_cast<uint64_t>(&ov), 0, 0, 0, false,
+                                  &rv);
+      std::printf("     xmmarg: in=%g native=%g/%g vm=%g/%g st=%u ret=%llu\n",
+                  static_cast<double>(arg), static_cast<double>(on),
+                  static_cast<double>(rn), static_cast<double>(ov),
+                  static_cast<double>(rv), gr.status,
+                  static_cast<unsigned long long>(gr.ret));
+    }
     ck(bad == 0, "f_xmmarg: XMM argument and XMM return value carried");
     std::printf("  %s  f_xmmarg     %d inputs (XMM arg/return)\n", bad ? "FAIL" : "OK ", n);
   }
@@ -2484,8 +2499,13 @@ HYDA_TEST(Simd, ymm_roundtrip, "YMM save/restore keeps all 256 bits") {
   const hyda::HydaFpState* saved = hyda::fp_state();
   const bool save_lo = saved->xmm(0)[0] == pat[0] && saved->xmm(0)[1] == pat[1];
   const bool save_hi = saved->ymm_hi(0)[0] == pat[2] && saved->ymm_hi(0)[1] == pat[3];
-  std::printf("     save: low=%d high=%d avx=%d\n", save_lo ? 1 : 0, save_hi ? 1 : 0,
-              hyda::fp_supports_avx() ? 1 : 0);
+  std::printf("     save: low=%d high=%d avx=%d slot=%p pat=%p x0=%#llx,%#llx y0=%#llx,%#llx\n",
+              save_lo ? 1 : 0, save_hi ? 1 : 0, hyda::fp_supports_avx() ? 1 : 0,
+              static_cast<const void*>(saved), static_cast<const void*>(pat),
+              static_cast<unsigned long long>(saved->xmm(0)[0]),
+              static_cast<unsigned long long>(saved->xmm(0)[1]),
+              static_cast<unsigned long long>(saved->ymm_hi(0)[0]),
+              static_cast<unsigned long long>(saved->ymm_hi(0)[1]));
   ck(save_lo && save_hi, "save_simd stores both YMM halves");
 
   simd_restore_store(reinterpret_cast<uint64_t>(out),
