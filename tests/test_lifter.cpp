@@ -799,7 +799,8 @@ static std::vector<Case> mk_cases(int n, uint64_t ma, uint64_t mb, uint64_t mc, 
 }
 
 static void run_diff(const char* name, FnPtr fn, uintptr_t stop_addr,
-                     const std::vector<Case>& cases, SkipFn skip = nullptr) {
+                     const std::vector<Case>& cases, SkipFn skip = nullptr,
+                     uint64_t mutate_seed = 0) {
   const uintptr_t start = reinterpret_cast<uintptr_t>(fn);
   if (stop_addr <= start) {
     ck(false, std::string(name) + ": invalid section range");
@@ -809,6 +810,7 @@ static void run_diff(const char* name, FnPtr fn, uintptr_t stop_addr,
   LiftOptions opt;
   opt.base_address = start;
   opt.name = name;
+  opt.mutate_seed = mutate_seed;
   const size_t size = static_cast<size_t>(stop_addr - start);
 
   const LiftResult r =
@@ -2623,8 +2625,8 @@ HYDA_TEST(DoubleShift, mutation_seeds, "SHLD/SHRD under 4 mutation seeds") {
                     sc, [](const Case&) { return 0x1Du; }, seed);
     run_diff_seeded("f_shrd64", f_shrd64, reinterpret_cast<uintptr_t>(__stop_hyda_f_shrd64),
                     sc, [](const Case&) { return 0x1Du; }, seed);
-    run_diff_seeded("f_alu", f_alu, reinterpret_cast<uintptr_t>(__stop_hyda_f_alu),
-                    ac, [](const Case&) { return 0x1Fu; }, seed);
+    run_diff("f_alu", f_alu, reinterpret_cast<uintptr_t>(__stop_hyda_f_alu), ac,
+             nullptr, seed);
   }
 }
 

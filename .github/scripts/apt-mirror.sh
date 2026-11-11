@@ -34,3 +34,6 @@ for f in /etc/apt/sources.list /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/
     "s#(https?://[^ ]*ubuntu\.com/ubuntu|mirror\+file:/etc/apt/apt-mirrors\.txt)#$mirror#g" \
     "$f"
 done
+
+rm -rf /var/lib/apt/lists/*
+mkdir -p /var/lib/apt/lists/partial
