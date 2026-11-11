@@ -845,6 +845,8 @@ class Lifter {
       case X86_INS_SAR:     return ins_shift(in, ShiftOp::Sar);
       case X86_INS_ROL:     return ins_shift(in, ShiftOp::Rol);
       case X86_INS_ROR:     return ins_shift(in, ShiftOp::Ror);
+      case X86_INS_SHLD:    return ins_double_shift(in, true);
+      case X86_INS_SHRD:    return ins_double_shift(in, false);
 
       case X86_INS_IMUL:    return ins_imul(in);
       case X86_INS_MUL:     return ins_muldiv(in, MulKind::Unsigned);
@@ -1401,6 +1403,10 @@ class Lifter {
     if (!sse_op(in, 0, &d)) return false;
     if (!sse_op(in, 1, &s)) return false;
 
+    if (s.kind == IRKind::Mem && kind <= 1) {
+      prog_.add(IRCommand::mov(IROperand::R(REG_T1, s.size), s));
+      s = IROperand::R(REG_T1, s.size);
+    }
     if (s.kind == IRKind::Mem) return fail("sse conversion memory source is an island");
     if (d.kind == IRKind::Mem) return fail("sse conversion memory target is an island");
 
@@ -1635,6 +1641,150 @@ class Lifter {
     c.src = s;
     c.size = d.size;
     prog_.add(c);
+    return true;
+  }
+
+  static IRCommand shift_cmd(ShiftOp k, int reg, uint8_t size, IROperand cnt) {
+    IRCommand c = IRCommand::none(IROp::Shift);
+    c.sub = static_cast<uint8_t>(k);
+    c.dst = IROperand::R(reg, size);
+    c.src = cnt;
+    c.size = size;
+    return c;
+  }
+
+  void emit_bt(int reg, IROperand idx) {
+    IRCommand bt = IRCommand::none(IROp::BitTest);
+    bt.sub = static_cast<uint8_t>(BitTestKind::Bt);
+    bt.dst = IROperand::R(reg, 8);
+    bt.src = idx;
+    bt.size = 8;
+    prog_.add(bt);
+  }
+
+  void double_shift_imm(bool left, uint8_t size, int r_dst, int r_src,
+                        int64_t cnt) {
+    const int64_t bits = (size == 8) ? 64 : 32;
+    const int64_t key = bits - cnt;
+
+    prog_.add(IRCommand::mov(IROperand::R(REG_T3, size), IROperand::R(r_dst, size)));
+    prog_.add(IRCommand::mov(IROperand::R(REG_T1, size), IROperand::R(REG_T3, size)));
+    prog_.add(shift_cmd(left ? ShiftOp::Shl : ShiftOp::Shr, REG_T1, size,
+                        IROperand::I(cnt, 1)));
+    prog_.add(IRCommand::mov(IROperand::R(REG_T2, size), IROperand::R(r_src, size)));
+    prog_.add(shift_cmd(left ? ShiftOp::Shr : ShiftOp::Shl, REG_T2, size,
+                        IROperand::I(key, 1)));
+    prog_.add(IRCommand::alu(AluOp::Or, IROperand::R(REG_T1, size),
+                             IROperand::R(REG_T2, size)));
+    prog_.add(IRCommand::mov(IROperand::R(r_dst, size), IROperand::R(REG_T1, size)));
+    emit_bt(REG_T3, IROperand::I(left ? key : cnt - 1, 1));
+  }
+
+  void double_shift_reg(bool left, uint8_t size, int r_dst, int r_src) {
+    const int64_t bits = (size == 8) ? 64 : 32;
+    const uint8_t bs = size;
+
+    if (left) {
+      prog_.add(IRCommand::mov(IROperand::R(REG_T2, 1), IROperand::I(bits, 1)));
+      prog_.add(IRCommand::alu(AluOp::Sub, IROperand::R(REG_T2, 1),
+                               IROperand::R(REG_T3, 1)));
+    } else {
+      prog_.add(IRCommand::mov(IROperand::R(REG_T2, 1), IROperand::R(REG_T3, 1)));
+      prog_.add(IRCommand::alu(AluOp::Sub, IROperand::R(REG_T2, 1),
+                               IROperand::I(1, 1)));
+    }
+    prog_.add(IRCommand::mov(IROperand::R(REG_T1, bs), IROperand::R(r_dst, bs)));
+    prog_.add(shift_cmd(ShiftOp::Shr, REG_T1, bs, IROperand::R(REG_T2, 1)));
+
+    IRCommand save = IRCommand::none(IROp::Push);
+    save.src = IROperand::R(REG_T1, 8);
+    prog_.add(save);
+
+    prog_.add(IRCommand::mov(IROperand::R(REG_T2, 1), IROperand::I(bits, 1)));
+    prog_.add(IRCommand::alu(AluOp::Sub, IROperand::R(REG_T2, 1),
+                             IROperand::R(REG_T3, 1)));
+    prog_.add(IRCommand::mov(IROperand::R(REG_T1, bs), IROperand::R(r_dst, bs)));
+    prog_.add(shift_cmd(left ? ShiftOp::Shl : ShiftOp::Shr, REG_T1, bs,
+                        IROperand::R(REG_T3, 1)));
+    prog_.add(IRCommand::mov(IROperand::R(REG_T3, bs), IROperand::R(r_src, bs)));
+    prog_.add(shift_cmd(left ? ShiftOp::Shr : ShiftOp::Shl, REG_T3, bs,
+                        IROperand::R(REG_T2, 1)));
+    prog_.add(IRCommand::alu(AluOp::Or, IROperand::R(REG_T1, size),
+                             IROperand::R(REG_T3, size)));
+    prog_.add(IRCommand::mov(IROperand::R(r_dst, bs), IROperand::R(REG_T1, bs)));
+
+    IRCommand restore = IRCommand::none(IROp::Pop);
+    restore.dst = IROperand::R(REG_T2, 8);
+    prog_.add(restore);
+    emit_bt(REG_T2, IROperand::I(0, 1));
+
+    IRCommand drop = IRCommand::none(IROp::Pop);
+    drop.dst = IROperand::R(REG_T1, 8);
+    prog_.add(drop);
+  }
+
+  bool ins_double_shift(cs_insn& in, bool left) {
+    const cs_x86& x = in.detail->x86;
+    if (x.op_count != 3) return fail("shld/shrd: 3 operands expected");
+
+    IROperand d, s, n;
+    if (!to_operand(in, 0, &d)) return false;
+    if (!to_operand(in, 1, &s)) return false;
+    if (!to_operand(in, 2, &n)) return false;
+
+    if (d.kind != IRKind::Reg || s.kind != IRKind::Reg)
+      return fail("shld/shrd operands must be registers");
+    if (d.size != s.size) return fail("shld/shrd operand sizes differ");
+    if (d.size != 4 && d.size != 8)
+      return fail("shld/shrd supports 32/64-bit operands");
+
+    const uint8_t size = d.size;
+    const int64_t bits = (size == 8) ? 64 : 32;
+    const int r_dst = d.reg;
+    const int r_src = s.reg;
+
+    if (n.kind == IRKind::Imm) {
+      const int64_t cnt = n.imm & (bits - 1);
+      if (cnt == 0) {
+        if (size == 4) {
+          prog_.add(IRCommand::mov(IROperand::R(r_dst, 4), IROperand::R(r_dst, 4)));
+        }
+        return true;
+      }
+      double_shift_imm(left, size, r_dst, r_src, cnt);
+      return true;
+    }
+
+    if (n.kind != IRKind::Reg || n.size != 1 || n.reg != REG_RCX)
+      return fail("shld/shrd count must be CL or imm8");
+
+    const int l_zero = prog_.new_label();
+    const int l_done = prog_.new_label();
+
+    prog_.add(IRCommand::none(IROp::Pushf));
+    prog_.add(IRCommand::mov(IROperand::R(REG_T3, 1), IROperand::R(REG_RCX, 1)));
+    prog_.add(IRCommand::alu(AluOp::And, IROperand::R(REG_T3, 1),
+                             IROperand::I(bits - 1, 1)));
+
+    IRCommand t = IRCommand::none(IROp::Test);
+    t.dst = IROperand::R(REG_T3, 1);
+    t.src = IROperand::R(REG_T3, 1);
+    t.size = 1;
+    prog_.add(t);
+
+    IRCommand jz = IRCommand::br(IROp::Jcc, l_zero);
+    jz.sub = 0x4;
+    prog_.add(jz);
+
+    double_shift_reg(left, size, r_dst, r_src);
+
+    prog_.add(IRCommand::br(IROp::Jmp, l_done));
+    prog_.bind(l_zero);
+    prog_.add(IRCommand::none(IROp::Popf));
+    if (size == 4) {
+      prog_.add(IRCommand::mov(IROperand::R(r_dst, 4), IROperand::R(r_dst, 4)));
+    }
+    prog_.bind(l_done);
     return true;
   }
 

@@ -488,6 +488,26 @@ HYDA_SHIFT_PROBE(f_ror16, hyda_f_ror16, "ror", "ax")
 HYDA_SHIFT_PROBE(f_ror32, hyda_f_ror32, "ror", "eax")
 HYDA_SHIFT_PROBE(f_ror64, hyda_f_ror64, "ror", "rax")
 
+#define HYDA_DOUBLE_SHIFT_PROBE(NAME, SEC, INSN)                              \
+  HYDA_FN(NAME, HYDA_STR(SEC)) {                                              \
+    __asm__(".intel_syntax noprefix\n" HYDA_SAVE_PTR                          \
+            "mov rax, rdi\n mov r11, rsi\n mov cl, sil\n cmp edx, edx\n"      \
+            INSN "\n" HYDA_PACK_FLAGS HYDA_OUT                                \
+            "ret\n .att_syntax prefix\n");                                    \
+  }                                                                           \
+  extern "C" char __stop_##SEC[];
+
+HYDA_DOUBLE_SHIFT_PROBE(f_shld64, hyda_f_shld64, "shld rax, r11, cl")
+HYDA_DOUBLE_SHIFT_PROBE(f_shrd64, hyda_f_shrd64, "shrd rax, r11, cl")
+HYDA_DOUBLE_SHIFT_PROBE(f_shld32, hyda_f_shld32, "shld eax, r11d, cl")
+HYDA_DOUBLE_SHIFT_PROBE(f_shrd32, hyda_f_shrd32, "shrd eax, r11d, cl")
+HYDA_DOUBLE_SHIFT_PROBE(f_shld64_imm, hyda_f_shld64_imm, "shld rax, r11, 9")
+HYDA_DOUBLE_SHIFT_PROBE(f_shrd64_imm, hyda_f_shrd64_imm, "shrd rax, r11, 9")
+HYDA_DOUBLE_SHIFT_PROBE(f_shld32_imm, hyda_f_shld32_imm, "shld eax, r11d, 9")
+HYDA_DOUBLE_SHIFT_PROBE(f_shrd32_imm, hyda_f_shrd32_imm, "shrd eax, r11d, 9")
+HYDA_DOUBLE_SHIFT_PROBE(f_shld32_zero, hyda_f_shld32_zero, "shld eax, r11d, 0")
+HYDA_DOUBLE_SHIFT_PROBE(f_shrd32_zero, hyda_f_shrd32_zero, "shrd eax, r11d, 0")
+
 HYDA_FN(f_sse_mix, "hyda_f_sse_mix") {
   __asm__(".intel_syntax noprefix\n"
           "movupd xmm0, [rdi]\n"
@@ -2300,6 +2320,32 @@ int main() {
     HYDA_SHIFT_CASE(f_ror32, hyda_f_ror32, 32, false);
     HYDA_SHIFT_CASE(f_ror64, hyda_f_ror64, 64, false);
 #undef HYDA_SHIFT_CASE
+  }
+
+  std::printf("\n[5b] Double-precision shifts (SHLD/SHRD)\n");
+  {
+    const std::vector<Case> sc = mk_shift_cases();
+    auto ds_mask = [](const Case&) { return 0x1Du; };
+#define HYDA_DSHIFT_CASE(NAME, SEC)                                          \
+    run_diff_out(#NAME, NAME, reinterpret_cast<uintptr_t>(__stop_##SEC), sc, \
+                 ds_mask)
+    HYDA_DSHIFT_CASE(f_shld64, hyda_f_shld64);
+    HYDA_DSHIFT_CASE(f_shrd64, hyda_f_shrd64);
+    HYDA_DSHIFT_CASE(f_shld32, hyda_f_shld32);
+    HYDA_DSHIFT_CASE(f_shrd32, hyda_f_shrd32);
+#undef HYDA_DSHIFT_CASE
+
+    const std::vector<Case> ic = mk_cases(200, ~0ull, ~0ull, 0, 0);
+#define HYDA_DSHIFT_CASE(NAME, SEC)                                          \
+    run_diff_out(#NAME, NAME, reinterpret_cast<uintptr_t>(__stop_##SEC), ic, \
+                 ds_mask)
+    HYDA_DSHIFT_CASE(f_shld64_imm, hyda_f_shld64_imm);
+    HYDA_DSHIFT_CASE(f_shrd64_imm, hyda_f_shrd64_imm);
+    HYDA_DSHIFT_CASE(f_shld32_imm, hyda_f_shld32_imm);
+    HYDA_DSHIFT_CASE(f_shrd32_imm, hyda_f_shrd32_imm);
+    HYDA_DSHIFT_CASE(f_shld32_zero, hyda_f_shld32_zero);
+    HYDA_DSHIFT_CASE(f_shrd32_zero, hyda_f_shrd32_zero);
+#undef HYDA_DSHIFT_CASE
   }
 
   std::printf("\n[6] Registers written by the body (trampoline protection)\n");

@@ -144,8 +144,8 @@ lifter/     x86-64 -> IR -> bytecode lifter (library + CLI)
 runtime/win/  Windows entry stub and self-test
 tools/protect/  hyda_protect (CLI, PE reader, handler analysis, layout, pipeline)
 tools/e2e/      Python verifiers used by the end-to-end test
-tools/          protect_e2e.sh orchestration
-tests/      host, lifter and Windows PE tests
+tools/          protect_e2e.sh and lift_coverage.sh
+tests/      host, lifter, lifting-coverage corpus and Windows PE tests
 ```
 
 ## Testing
@@ -159,11 +159,29 @@ tests/      host, lifter and Windows PE tests
 
 All suites pass on Linux, and the Windows suites pass under Wine.
 
+### Lifting coverage
+
+`tools/lift_coverage.sh` lifts a corpus of realistic functions at `-O0` to
+`-Os` and reports which instructions end up as native islands instead of VM
+bytecode:
+
+```bash
+./tools/lift_coverage.sh build
+```
+
+Current corpus: 190 lifts, 3,615 instructions, 22 islands. The remaining
+islands are deliberate: `lock xadd`/`lock cmpxchg`, memory `xchg` and
+`rep stos*` keep their native form because the VM cannot reproduce lock
+semantics or the direction flag. They still execute inside the VM through the
+encrypted call gate. `shld`/`shrd` are virtualized for both register and
+immediate counts; OF after a single-bit double shift is not modeled.
+
 ## Limitations
 
 - Windows x64 only; MSVC is not supported yet.
-- Only the x86-64 subset understood by the lifter can be virtualized.
-  Unsupported instructions are reported instead of silently miscompiled.
+- Only the x86-64 subset understood by the lifter is virtualized. Anything
+  else runs through the native gate as an island, or is reported if it cannot
+  be relocated — instructions are never silently miscompiled.
 - Not a generic packer: only functions compiled into `hydafn_*` sections are
   protected.
 - The project is under active development; APIs may change.

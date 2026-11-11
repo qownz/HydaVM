@@ -144,6 +144,11 @@ int main(int argc, char** argv) {
   std::printf("decoded    : %zu\n", r.decoded);
   std::printf("ir insns   : %zu\n", r.emitted);
   std::printf("pruned     : %zu\n", r.pruned);
+  std::printf("islands    : %zu\n", r.prog.natives.size());
+  for (const hyda::NativeIsland& isl : r.prog.natives) {
+    std::printf("    %#llx  %s\n",
+                static_cast<unsigned long long>(isl.orig_addr), isl.text.c_str());
+  }
 
   if (!r.unsupported.empty()) {
     std::printf("unsupported: %zu\n", r.unsupported.size());
