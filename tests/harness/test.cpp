@@ -58,6 +58,19 @@ void Reporter::check(bool ok, const std::string& what, const char* file, int lin
   std::printf("    %s:%d: %s\n", file, line, what.c_str());
 }
 
+void Reporter::eq_hex(uint64_t a, uint64_t b, const char* what, const char* file,
+                      int line) {
+  if (a == b) {
+    check(true, what, file, line);
+    return;
+  }
+  char buf[160];
+  std::snprintf(buf, sizeof(buf), "%s (got %#llx, want %#llx)", what,
+                static_cast<unsigned long long>(a),
+                static_cast<unsigned long long>(b));
+  check(false, buf, file, line);
+}
+
 Registry& Registry::instance() {
   static Registry r;
   return r;

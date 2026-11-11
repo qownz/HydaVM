@@ -54,8 +54,9 @@ endif()
 
 enable_testing()
 
-add_executable(test_vm tests/test_vm.cpp)
+add_executable(test_vm tests/test_vm.cpp tests/harness/test.cpp)
 target_link_libraries(test_vm PRIVATE hyda_vm)
+  target_include_directories(test_vm PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 if(NOT MSVC AND HYDA_WARNINGS)
   target_compile_options(test_vm PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()

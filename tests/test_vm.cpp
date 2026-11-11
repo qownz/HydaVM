@@ -1,3 +1,4 @@
+#include "harness/test.hpp"
 #include "hyda/ir/assembler.hpp"
 #include "hyda/guard/antidbg.hpp"
 #include "hyda/guard/apihash.hpp"
@@ -28,42 +29,26 @@
 
 using namespace hyda;
 
-static int g_checks = 0;
-static int g_fails = 0;
-static int g_shown = 0;
+namespace {
 
-static void fail(const char* file, int line, const char* what, long long got, long long want) {
-  ++g_fails;
-  if (g_shown++ < 30) {
-    std::printf("  FAIL %s:%d  %s   (got %lld, want %lld)\n", file, line, what, got, want);
-  }
-}
+hyda::test::Reporter* g_rep = nullptr;
 
-#define CHECK_TRUE(expr)                                            \
-  do {                                                              \
-    ++g_checks;                                                     \
-    if (!(expr)) fail(__FILE__, __LINE__, #expr, 0, 1);             \
+}  // namespace
+
+#define CHECK_TRUE(expr) \
+  (g_rep->check(static_cast<bool>(expr), #expr, __FILE__, __LINE__))
+
+#define CHECK_EQ(a, b)                                          \
+  do {                                                          \
+    const long long _a = (long long)(a);                        \
+    const long long _b = (long long)(b);                        \
+    g_rep->eq(_a, _b, #a " == " #b, __FILE__, __LINE__);        \
   } while (0)
 
-#define CHECK_EQ(a, b)                                              \
-  do {                                                              \
-    ++g_checks;                                                     \
-    const long long _a = (long long)(a);                            \
-    const long long _b = (long long)(b);                            \
-    if (_a != _b) fail(__FILE__, __LINE__, #a " == " #b, _a, _b);   \
-  } while (0)
-
-#define CHECK_U64(a, b)                                             \
-  do {                                                              \
-    ++g_checks;                                                     \
-    const uint64_t _a = (uint64_t)(a);                              \
-    const uint64_t _b = (uint64_t)(b);                              \
-    if (_a != _b) {                                                 \
-      ++g_fails;                                                    \
-      if (g_shown++ < 30)                                           \
-        std::printf("  FAIL %s:%d  %s == %s   (got 0x%016" PRIx64 ", want 0x%016" PRIx64 ")\n", \
-                    __FILE__, __LINE__, #a, #b, _a, _b);            \
-    }                                                               \
+#define CHECK_U64(a, b)                                         \
+  do {                                                          \
+    g_rep->eq_hex(static_cast<uint64_t>(a), static_cast<uint64_t>(b), \
+                  #a " == " #b, __FILE__, __LINE__);            \
   } while (0)
 
 alignas(64) static uint8_t g_stack[128 * 1024];
@@ -451,12 +436,9 @@ static void check_flags(const char* what, uint64_t a, uint64_t b, bool cf_in,
                         Op op, unsigned bits, uint64_t want_res,
                         bool cf, bool of, bool zf, bool sf, bool pf) {
   const AluObs o = observe_alu(op, a, b, cf_in);
-  ++g_checks;
-  if (o.status != ST_HALT) {
-    ++g_fails;
-    if (g_shown++ < 30) std::printf("  FAIL %s: status %u\n", what, o.status);
-    return;
-  }
+  g_rep->check(o.status == ST_HALT, std::string(what) + ": vm status", __FILE__,
+               __LINE__);
+  if (o.status != ST_HALT) return;
 
   struct { const char* n; bool got, want; } f[5] = {
       {"CF", flag_bit(o.flags, F_CF), cf},
@@ -466,13 +448,8 @@ static void check_flags(const char* what, uint64_t a, uint64_t b, bool cf_in,
       {"PF", flag_bit(o.flags, F_PF), pf},
   };
   for (int i = 0; i < 5; ++i) {
-    ++g_checks;
-    if (f[i].got != f[i].want) {
-      ++g_fails;
-      if (g_shown++ < 30)
-        std::printf("  FAIL %s: %s flag (a=0x%016" PRIx64 ", b=0x%016" PRIx64 ", ci=%d)\n",
-                    what, f[i].n, a, b, (int)cf_in);
-    }
+    g_rep->check(f[i].got == f[i].want, std::string(what) + ": " + f[i].n + " flag",
+                 __FILE__, __LINE__);
   }
 
   const uint64_t m = mask_bits(bits);
@@ -1370,13 +1347,9 @@ static void test_dead_flags() {
     const Op base = static_cast<Op>(i);
     const Op nf = nf_variant(base);
     if (nf == base) continue;
-    ++g_checks;
-
-    if (std::memcmp(&OP_SIGS[i], &OP_SIGS[static_cast<size_t>(nf)],
-                    sizeof(Sig)) != 0) {
-      fail(__FILE__, __LINE__, "nf_variant must keep the same signature", (long long)i,
-           (long long)OP_COUNT);
-    }
+    g_rep->check(std::memcmp(&OP_SIGS[i], &OP_SIGS[static_cast<size_t>(nf)],
+                             sizeof(Sig)) == 0,
+                 "nf_variant keeps the same operand signature", __FILE__, __LINE__);
     CHECK_TRUE(nf_variant(nf) == nf);
   }
 }
@@ -3653,50 +3626,228 @@ static void test_sse() {
   }
 }
 
-int main() {
-  std::printf("HydaVM host tests\n");
-  std::printf("  opcodes       : %zu\n", OP_COUNT);
-  std::printf("  seed          : 0x%016" PRIx64 "\n", (uint64_t)HYDA_VM_SEED);
-
+// The per-build opcode permutation is a bijection.
+HYDA_TEST(Vm, permutation, "Every opcode slot maps to its own handler") {
+  g_rep = &r;
   test_permutation();
+}
+
+// The dispatcher runs a straight-line block and returns the sum.
+HYDA_TEST(Vm, basic_arith, "MOV/ADD/SUB/XOR through the dispatcher") {
+  g_rep = &r;
   test_basic_arith();
+}
+
+// Conditional jumps loop until the counter runs out.
+HYDA_TEST(Vm, loop_sum, "Branch loop accumulates the expected sum") {
+  g_rep = &r;
   test_loop_sum();
+}
+
+// A nested call returns to the instruction after it.
+HYDA_TEST(Vm, call_ret, "CALL/RET round-trip inside the bytecode") {
+  g_rep = &r;
   test_call_ret();
+}
+
+// Memory operands read and write the same bytes as native.
+HYDA_TEST(Vm, memory, "Loads and stores with base+index addressing") {
+  g_rep = &r;
   test_memory();
+}
+
+// Partial writes must not disturb the rest of the slot.
+HYDA_TEST(Vm, size_semantics, "8/16/32-bit writes keep the upper bits") {
+  g_rep = &r;
   test_size_semantics();
+}
+
+// Count 0, 1, width-1 and width are compared against C.
+HYDA_TEST(Vm, shifts, "Shift opcodes match the reference on edge counts") {
+  g_rep = &r;
   test_shifts();
+}
+
+// RDX:RAX results and the flags line up with the host.
+HYDA_TEST(Vm, mul_div, "Signed and unsigned multiply/divide") {
+  g_rep = &r;
   test_mul_div();
+}
+
+// All 16 condition codes are exercised.
+HYDA_TEST(Vm, cmov, "CMOV honours every condition code") {
+  g_rep = &r;
   test_cmov();
+}
+
+// CF/OF/ZF/SF/PF are compared for add, sub, adc, sbb, logic, inc/dec and neg.
+HYDA_TEST(Flags, flag_reference, "ALU flags match a reference implementation") {
+  g_rep = &r;
   test_flag_reference();
+}
+
+// Malformed bytecode is rejected instead of executed.
+HYDA_TEST(Vm, errors, "Bad opcode/register/fault set the right status") {
+  g_rep = &r;
   test_errors();
+}
+
+// The guest stack bounds are enforced.
+HYDA_TEST(Vm, stack_guard, "Push/pop outside the stack limits fault") {
+  g_rep = &r;
   test_stack_guard();
+}
+
+// Decoding every slot consumes the bytecode exactly.
+HYDA_TEST(Report, disassembly, "The disassembler walks the whole program") {
+  g_rep = &r;
   test_disasm_walk();
+}
+
+// Mutated programs answer the same as the clean one.
+HYDA_TEST(Mutate, mutation, "Junk/noise/inverse keep results identical") {
+  g_rep = &r;
   test_mutate();
+}
+
+// Index mask, key/base variants, entry shift and call style are all covered.
+HYDA_TEST(Dispatch, profiles, "Every dispatch profile executes the same") {
+  g_rep = &r;
   test_dispatch_profiles();
+}
+
+// Each instruction carries its own key material.
+HYDA_TEST(Codec, operand_crypt, "Operands decrypt per instruction") {
+  g_rep = &r;
   test_operand_crypt();
+}
+
+// Assemble, encode, decode and compare.
+HYDA_TEST(Codec, codec, "Bytecode encoder/decoder round-trip") {
+  g_rep = &r;
   test_codec();
+}
+
+// The dead-flag pass only removes unobservable work.
+HYDA_TEST(Flags, dead_flags, "Dropped flag writes never change a branch") {
+  g_rep = &r;
   test_dead_flags();
+}
+
+// Mixed boolean-arithmetic forms are checked against the plain expression.
+HYDA_TEST(Mutate, mba_identities, "MBA rewrites are algebraically identical") {
+  g_rep = &r;
   test_mba_identities();
+}
+
+// Every generated body is compared with the base opcode.
+HYDA_TEST(Mutate, mba_bodies, "MBA bodies compute the same value and flags") {
+  g_rep = &r;
   test_mba_bodies();
+}
+
+// Split bodies are reassembled into an equivalent opcode.
+HYDA_TEST(Mutate, body_split, "Handler bodies split without changing results") {
+  g_rep = &r;
   test_body_split();
+}
+
+// The alternate dispatch loop is result-identical.
+HYDA_TEST(Vm2, core, "Second dispatcher runs the same bytecode") {
+  g_rep = &r;
   test_vm2_core();
+}
+
+// Packed and scalar operations are compared against native.
+HYDA_TEST(Sse, simd, "SSE subset matches the host") {
+  g_rep = &r;
   test_sse();
+}
+
+// A nested run must not disturb the outer frame.
+HYDA_TEST(Vm2, nested, "Nested VM entry keeps its own stack") {
+  g_rep = &r;
   test_nested_vm();
+}
+
+// Two instances run the same program with different keys.
+HYDA_TEST(Vm2, instance_seed, "Per-instance seeds differ but agree on results") {
+  g_rep = &r;
   test_instance_seed();
+}
+
+// Header fields survive a write/read cycle.
+HYDA_TEST(Codec, blob_header, "Blob header parse/serialize round-trip") {
+  g_rep = &r;
   test_blob_header();
+}
+
+// A corrupt register index stops the VM with a status.
+HYDA_TEST(Vm, bad_register, "Out-of-range register slots are rejected") {
+  g_rep = &r;
   test_bad_register();
+}
+
+// The dispatch table never holds absolute handler addresses.
+HYDA_TEST(Dispatch, handler_hiding, "Handler offsets are stored relative and obscured") {
+  g_rep = &r;
   test_handler_table_hiding();
+}
+
+// A modified shard must fail verification.
+HYDA_TEST(Hydak, shard, "Shard build/verify round-trip and tamper detection") {
+  g_rep = &r;
   test_hydak_shard();
+}
+
+// Every section is described and resolvable.
+HYDA_TEST(Hydak, catalog, "Catalog lookup and layout") {
+  g_rep = &r;
   test_hydak_catalog();
+}
+
+// The scanner reports the same set the catalog holds.
+HYDA_TEST(Hydak, scan, "Catalog scan finds every section") {
+  g_rep = &r;
   test_hydak_scan();
+}
+
+// The fast path and the full path agree.
+HYDA_TEST(Hydak, fast_paths, "Cached decrypt paths stay correct") {
+  g_rep = &r;
   test_hydak_speed_paths();
+}
+
+// Integrity chunks cover the image without gaps.
+HYDA_TEST(Guard, integrity, "CRC over regions and hole splitting") {
+  g_rep = &r;
   test_integrity();
+}
+
+// The anti-debug policy reacts to each flag set.
+HYDA_TEST(Guard, antidbg, "Debug flag detection and policy") {
+  g_rep = &r;
   test_antidbg();
+}
+
+// Fusion only merges instructions with identical effects.
+HYDA_TEST(Mutate, fusion, "Fused pairs match the unfused results") {
+  g_rep = &r;
   test_fuse();
+}
+
+// Every logical register maps to a distinct slot.
+HYDA_TEST(Dispatch, vreg_perm, "Register slot permutation is a bijection") {
+  g_rep = &r;
   test_vreg_perm();
+}
 
+// Prints a sample program; never fails.
+HYDA_TEST(Report, demo, "Informational disassembly dump") {
+  g_rep = &r;
   demo_disassembly();
+}
 
-  std::printf("result: %d checks, %d failures\n", g_checks, g_fails);
-  return g_fails == 0 ? 0 : 1;
+int main(int argc, char** argv) {
+  return hyda::test::Registry::instance().run(argc, argv);
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -21,6 +22,8 @@ class Reporter {
                      std::to_string(b) + ")",
           file, line);
   }
+
+  void eq_hex(uint64_t a, uint64_t b, const char* what, const char* file, int line);
 
   int checks() const { return checks_; }
   int failures() const { return fails_; }

@@ -152,12 +152,22 @@ tests/      host, lifter, lifting-coverage corpus and Windows PE tests
 
 | Suite | Checks |
 |---|---|
-| `test_vm` (host differential) | 92,797 |
-| `test_lifter` | 297 |
+| `test_vm` (host differential) | 92,801 |
+| `test_lifter` | 367 |
 | `vm_selftest` (Windows) | 73 |
 | `pe_e2e` | full protect → run → compare |
 
 All suites pass on Linux, and the Windows suites pass under Wine.
+
+`test_vm` and `test_lifter` share a small harness (`tests/harness/`): every
+case is a registered class with a suite, a name and a one-line description, so
+a run names what failed and cases can be selected:
+
+```bash
+./build/test_vm --list                    # suite, name, description
+./build/test_vm --filter=Flags            # one suite
+./build/test_lifter --filter=DoubleShift.mutation_seeds
+```
 
 ### Lifting coverage
 
