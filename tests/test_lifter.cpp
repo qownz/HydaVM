@@ -1604,21 +1604,6 @@ static void gate_section() {
       ++n;
       if (gr.status != ST_HALT || ov != on || rv != rn || gr.ret != 7) ++bad;
     }
-    if (bad != 0) {
-      float arg = 3.25f, on = 0.0f, ov = 0.0f, rn = 0.0f, rv = 0.0f;
-      test_call_xmm0(reinterpret_cast<uint64_t>(f_xmmarg),
-                     reinterpret_cast<uint64_t>(&on),
-                     reinterpret_cast<uint64_t>(&arg),
-                     reinterpret_cast<uint64_t>(&rn));
-      simd_seed_xmm0(&arg, reinterpret_cast<uint64_t>(&hyda_vm_save_simd));
-      GatedCall gr = vm_run_gated(g, reinterpret_cast<uint64_t>(&ov), 0, 0, 0, false,
-                                  &rv);
-      std::printf("     xmmarg: in=%g native=%g/%g vm=%g/%g st=%u ret=%llu\n",
-                  static_cast<double>(arg), static_cast<double>(on),
-                  static_cast<double>(rn), static_cast<double>(ov),
-                  static_cast<double>(rv), gr.status,
-                  static_cast<unsigned long long>(gr.ret));
-    }
     ck(bad == 0, "f_xmmarg: XMM argument and XMM return value carried");
     std::printf("  %s  f_xmmarg     %d inputs (XMM arg/return)\n", bad ? "FAIL" : "OK ", n);
   }
@@ -2495,23 +2480,10 @@ HYDA_TEST(Simd, ymm_roundtrip, "YMM save/restore keeps all 256 bits") {
   for (int i = 0; i < 4; ++i) pat[i] = 0xC0DE0000C0DE0000ull + static_cast<uint64_t>(i);
   std::memset(out, 0, sizeof(out));
 
-  const hyda::HydaFpState* scratch = hyda::fp_state();
-  const uint64_t before0 = scratch->xmm(0)[0];
   simd_seed_ymm(pat, reinterpret_cast<uint64_t>(&hyda_vm_save_simd));
   const hyda::HydaFpState* saved = hyda::fp_state();
   const bool save_lo = saved->xmm(0)[0] == pat[0] && saved->xmm(0)[1] == pat[1];
   const bool save_hi = saved->ymm_hi(0)[0] == pat[2] && saved->ymm_hi(0)[1] == pat[3];
-  std::printf("     save: low=%d high=%d avx=%d slot=%p pat=%p x0=%#llx,%#llx y0=%#llx,%#llx\n",
-              save_lo ? 1 : 0, save_hi ? 1 : 0, hyda::fp_supports_avx() ? 1 : 0,
-              static_cast<const void*>(saved), static_cast<const void*>(pat),
-              static_cast<unsigned long long>(saved->xmm(0)[0]),
-              static_cast<unsigned long long>(saved->xmm(0)[1]),
-              static_cast<unsigned long long>(saved->ymm_hi(0)[0]),
-              static_cast<unsigned long long>(saved->ymm_hi(0)[1]));
-  std::printf("     slot before=%#llx after=%#llx changed=%d\n",
-              static_cast<unsigned long long>(before0),
-              static_cast<unsigned long long>(saved->xmm(0)[0]),
-              before0 != saved->xmm(0)[0] ? 1 : 0);
   ck(save_lo && save_hi, "save_simd stores both YMM halves");
 
   simd_restore_store(reinterpret_cast<uint64_t>(out),
@@ -2645,11 +2617,14 @@ HYDA_TEST(DoubleShift, mutation_seeds, "SHLD/SHRD under 4 mutation seeds") {
   const uint64_t seeds[] = {0x1111111111111111ull, 0x2222222222222222ull,
                             0xDEADBEEFCAFEBABEull, 0x9E3779B97F4A7C15ull};
   const std::vector<Case> sc = mk_shift_cases();
+  const std::vector<Case> ac = mk_cases(120, ~0ull, ~0ull, ~0ull, ~0ull);
   for (uint64_t seed : seeds) {
     run_diff_seeded("f_shld64", f_shld64, reinterpret_cast<uintptr_t>(__stop_hyda_f_shld64),
                     sc, [](const Case&) { return 0x1Du; }, seed);
     run_diff_seeded("f_shrd64", f_shrd64, reinterpret_cast<uintptr_t>(__stop_hyda_f_shrd64),
                     sc, [](const Case&) { return 0x1Du; }, seed);
+    run_diff_seeded("f_alu", f_alu, reinterpret_cast<uintptr_t>(__stop_hyda_f_alu),
+                    ac, [](const Case&) { return 0x1Fu; }, seed);
   }
 }
 

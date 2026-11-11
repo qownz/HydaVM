@@ -19,9 +19,10 @@ struct Options {
 bool matches(const char* filter, const char* suite, const char* name) {
   if (filter == nullptr || *filter == '\0') return true;
   const size_t n = std::strlen(filter);
-  return std::strncmp(filter, suite, n) == 0 ||
-         std::strcmp(filter, name) == 0 ||
-         std::strstr(name, filter) != nullptr;
+  const std::string full = std::string(suite) + "." + name;
+  return full.compare(0, n, filter) == 0 || std::strncmp(filter, suite, n) == 0 ||
+         std::strstr(name, filter) != nullptr ||
+         std::strstr(suite, filter) != nullptr;
 }
 
 Options parse(int argc, char** argv) {
