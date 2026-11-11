@@ -1119,18 +1119,26 @@ static uint32_t g_placed_first_rva = 0;
 // Seeding host XMM0 and calling save_simd must be one indivisible step, and the
 // value must be read back in the same block as restore_simd.
 extern "C" __attribute__((naked, noinline))
-void simd_roundtrip_probe(uint64_t pat, uint64_t out, uint64_t save_fn,
-                          uint64_t restore_fn) {
+void simd_restore_store(uint64_t out, uint64_t restore_fn) {
   __asm__(".intel_syntax noprefix\n"
           "push rbx\n"
-          "mov rbx, rsi\n"
-          "mov rax, rcx\n"
-          "vmovups ymm0, [rdi]\n"
-          "call rdx\n"
+          "mov rbx, rdi\n"
+          "mov rax, rsi\n"
           "vxorps ymm0, ymm0, ymm0\n"
           "call rax\n"
           "vmovups [rbx], ymm0\n"
           "pop rbx\n"
+          "ret\n"
+          ".att_syntax prefix\n");
+}
+
+extern "C" __attribute__((naked, noinline))
+void simd_seed_ymm(const void* v, uint64_t save_fn) {
+  __asm__(".intel_syntax noprefix\n"
+          "sub rsp, 8\n"
+          "vmovups ymm0, [rdi]\n"
+          "call rsi\n"
+          "add rsp, 8\n"
           "ret\n"
           ".att_syntax prefix\n");
 }
@@ -2472,9 +2480,16 @@ HYDA_TEST(Simd, ymm_roundtrip, "YMM save/restore keeps all 256 bits") {
   for (int i = 0; i < 4; ++i) pat[i] = 0xC0DE0000C0DE0000ull + static_cast<uint64_t>(i);
   std::memset(out, 0, sizeof(out));
 
-  simd_roundtrip_probe(reinterpret_cast<uint64_t>(pat), reinterpret_cast<uint64_t>(out),
-                       reinterpret_cast<uint64_t>(&hyda_vm_save_simd),
-                       reinterpret_cast<uint64_t>(&hyda_vm_restore_simd));
+  simd_seed_ymm(pat, reinterpret_cast<uint64_t>(&hyda_vm_save_simd));
+  const hyda::HydaFpState* saved = hyda::fp_state();
+  const bool save_lo = saved->xmm(0)[0] == pat[0] && saved->xmm(0)[1] == pat[1];
+  const bool save_hi = saved->ymm_hi(0)[0] == pat[2] && saved->ymm_hi(0)[1] == pat[3];
+  std::printf("     save: low=%d high=%d avx=%d\n", save_lo ? 1 : 0, save_hi ? 1 : 0,
+              hyda::fp_supports_avx() ? 1 : 0);
+  ck(save_lo && save_hi, "save_simd stores both YMM halves");
+
+  simd_restore_store(reinterpret_cast<uint64_t>(out),
+                     reinterpret_cast<uint64_t>(&hyda_vm_restore_simd));
 
   bool ok = true;
   for (int i = 0; i < 4; ++i) ok = ok && (out[i] == pat[i]);
