@@ -3728,6 +3728,14 @@ HYDA_TEST(Codec, codec, "Bytecode encoder/decoder round-trip") {
   test_codec();
 }
 
+// The dispatch loop decodes slots through this table instead of the chain.
+HYDA_TEST(Codec, sbox_table, "Dispatch S-box matches codec_mix_core") {
+  g_rep = &r;
+  for (unsigned i = 0; i < 256; ++i) {
+    HYDA_CHECK(r, hyda_sbox[i] == codec_mix_core(static_cast<uint8_t>(i)));
+  }
+}
+
 // The dead-flag pass only removes unobservable work.
 HYDA_TEST(Flags, dead_flags, "Dropped flag writes never change a branch") {
   g_rep = &r;

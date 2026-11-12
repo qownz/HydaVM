@@ -10,9 +10,9 @@ namespace hyda {
 
 constexpr unsigned kHeaderBytes = 2;
 
-// Must match the inline copy in src/vm/dispatch_asm.cpp.
-inline uint8_t codec_mix8(uint8_t v, uint8_t k) {
-  v = static_cast<uint8_t>(v ^ k);
+// The dispatch loop reads slots through the table built in
+// src/vm/dispatch_asm.cpp, which tabulates this function.
+constexpr uint8_t codec_mix_core(uint8_t v) {
   v = static_cast<uint8_t>(v + (v << 1));
   v = static_cast<uint8_t>(v ^ (v >> 3));
   v = static_cast<uint8_t>(v + (v << 2));
@@ -20,6 +20,10 @@ inline uint8_t codec_mix8(uint8_t v, uint8_t k) {
   v = static_cast<uint8_t>(v + (v << 3));
   v = static_cast<uint8_t>(v ^ (v >> 6));
   return v;
+}
+
+inline uint8_t codec_mix8(uint8_t v, uint8_t k) {
+  return codec_mix_core(static_cast<uint8_t>(v ^ k));
 }
 
 inline uint8_t codec_unmix8(uint8_t v, uint8_t k) {

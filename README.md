@@ -222,6 +222,12 @@ reports the best of five rounds:
 Intel i3-1005G1, g++ 13.3, `-O3`. The VM op count includes the mutation
 engine's junk and noise, which the protector emits by default.
 
+Each body is also measured with ciphertext slots and operands, which is the
+configuration the protector emits: the table above is the plain one, and the
+ciphertext run costs ~2.1× the plain dispatch (`~2.35×` before the slot mixer
+became a 256-byte table). That premium is measured in-process against the
+plain row, so it does not move with CPU frequency.
+
 ```bash
 cmake --build build --target hyda_bench && ./build/hyda_bench
 ```

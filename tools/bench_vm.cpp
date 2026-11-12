@@ -1,5 +1,6 @@
 #include "lift.hpp"
 
+#include "hyda/codec/crypt.hpp"
 #include "hyda/ir/ir_codegen.hpp"
 #include "hyda/native/island.hpp"
 #include "hyda/vm/gate.hpp"
@@ -62,7 +63,8 @@ struct VmCall {
   uint64_t steps = 0;
 };
 
-VmCall vm_run(const hyda::Asm& code, uint64_t entry, uint64_t a, uint64_t b) {
+VmCall vm_run(const hyda::Asm& code, uint64_t entry, uint64_t a, uint64_t b,
+              uint64_t key = 0) {
   hyda::VMContext ctx;
   const uint64_t top =
       reinterpret_cast<uint64_t>(g_stack) + sizeof(g_stack) - 64;
@@ -72,7 +74,7 @@ VmCall vm_run(const hyda::Asm& code, uint64_t entry, uint64_t a, uint64_t b) {
   ctx.r[hyda::vsl(hyda::REG_RSI)] = b;
   hyda::vm_set_entry(ctx, entry);
   VmCall out;
-  out.status = hyda::vm_exec(ctx, code.code.data(), code.code.size());
+  out.status = hyda::vm_exec(ctx, code.code.data(), code.code.size(), key);
   out.ret = ctx.r[hyda::vsl(hyda::REG_RAX)];
   out.steps = ctx.steps;
   return out;
@@ -144,6 +146,23 @@ int main() {
                 vm_ns, vm_ns / native_ns,
                 static_cast<unsigned long long>(probe.steps),
                 vm_ns / static_cast<double>(probe.steps));
+
+    hyda::Asm enc = asmb;
+    const uint64_t key = hyda::crypt_key_for(0x1000);
+    hyda::crypt_operands_encrypt(enc.code.data(), enc.code.size(), key);
+    const VmCall enc_probe = vm_run(enc, cg.entry_offset, f.a, f.b, key);
+    if (enc_probe.status != hyda::ST_HALT || enc_probe.ret != probe.ret) {
+      std::printf("%-26s ciphertext run diverged (status %u)\n", f.name,
+                  enc_probe.status);
+      continue;
+    }
+    const double enc_ns = best_ns(5, iters / 4, [&]() {
+      sink = sink + vm_run(enc, cg.entry_offset, f.a, f.b, key).ret;
+    });
+    std::printf("%-26s %8.1fns %9.1fns %6.1fx %7llu %8.1f\n",
+                "  ^ ciphertext slots", native_ns, enc_ns, enc_ns / native_ns,
+                static_cast<unsigned long long>(enc_probe.steps),
+                enc_ns / static_cast<double>(enc_probe.steps));
   }
   {
     alignas(4096) static uint8_t area[8192];
