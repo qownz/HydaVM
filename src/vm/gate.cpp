@@ -51,6 +51,7 @@ extern "C" {
 __attribute__((used)) HYDA_INTERNAL hyda::HydaFpState* hyda_gate_fp_ptr = nullptr;
 
 __attribute__((used)) HYDA_INTERNAL uint8_t hyda_gate_avx = 0;
+__attribute__((used)) HYDA_INTERNAL uint64_t hyda_gate_flags = 0;
 
 __attribute__((used)) HYDA_INTERNAL HydaGateSlot hyda_gate_slots[hyda::kMaxVmDepth];
 __attribute__((used)) HYDA_INTERNAL uint64_t hyda_gate_depth = 0;
@@ -350,9 +351,7 @@ __attribute__((used)) HYDA_INTERNAL uint64_t hyda_gpr_tmp[17];
   "mov [rip + hyda_gpr_tmp + 96], r12\n"                               \
   "mov [rip + hyda_gpr_tmp + 104], r13\n"                              \
   "mov [rip + hyda_gpr_tmp + 112], r14\n"                              \
-  "mov [rip + hyda_gpr_tmp + 120], r15\n"                              \
-  "pushfq\n"                                                           \
-  "pop qword ptr [rip + hyda_gpr_tmp + 128]\n"
+  "mov [rip + hyda_gpr_tmp + 120], r15\n"
 
 #if defined(_WIN32)
 #  define HYDA_SAVE_ARGS                    \
@@ -477,6 +476,8 @@ HYDA_ENTRY __attribute__((naked, noinline)) void hyda_vm_gate_leave(void) {
   __asm__(
       ".intel_syntax noprefix\n"
 
+      "pushfq\n"
+      "pop qword ptr [rip + hyda_gate_flags]\n"
       "xchg r11, qword ptr [rip + hyda_gate_ctx]\n"
 
       "push rax\n push rdx\n push r8\n"
@@ -519,7 +520,7 @@ HYDA_ENTRY __attribute__((naked, noinline)) void hyda_vm_gate_leave(void) {
       "  cmp rax, 16\n"
       "  jb 8b\n"
 
-      "mov rax, qword ptr [rip + hyda_gpr_tmp + 128]\n"
+      "mov rax, qword ptr [rip + hyda_gate_flags]\n"
       "mov [r11 + " HYDA_S(HYDA_OFF_FLAGS) "], rax\n"
 
       "cld\n"

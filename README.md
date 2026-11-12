@@ -170,7 +170,7 @@ tests/      host, lifter, lifting-coverage corpus and Windows PE tests
 | Suite | Checks |
 |---|---|
 | `test_vm` (host differential) | 92,801 |
-| `test_lifter` | 385 |
+| `test_lifter` | 389 |
 | `vm_selftest` (Windows) | 73 |
 | `pe_e2e` | full protect → run → compare |
 
@@ -214,10 +214,10 @@ and a few SSE forms such as `movhps`/`movhlps` and 32-bit `bt`/`bts`.
 - Only the x86-64 subset understood by the lifter is virtualized. Anything
   else runs through the native gate as an island, or is reported if it cannot
   be relocated — instructions are never silently miscompiled.
-- An island executes natively, so it does not update the VM's flag state. Code
-  that branches on flags set by an island instruction may therefore differ;
-  `cld`/`std` and `rep movs`/`stos` are virtualized for this reason, and a
-  function that cannot be lifted is skipped and reported rather than patched.
+- An island runs its original instruction natively, so those bytes stay in the
+  image (encrypted, but unvirtualized). Flag writes are carried back into the
+  VM flag register; a function that cannot be lifted is skipped and reported
+  rather than patched.
 - Not a generic packer: only functions compiled into `hydafn_*` sections are
   protected.
 - The project is under active development; APIs may change.

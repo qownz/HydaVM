@@ -435,6 +435,22 @@ HYDA_FN(f_hbyte_flags, "hyda_f_hbyte_flags") {
 }
 extern "C" char __stop_hyda_f_hbyte_flags[];
 
+HYDA_FN(f_island_flags, "hyda_f_island_flags") {
+  __asm__(".intel_syntax noprefix\n"
+          "push rbx\n"
+          "mov rax, rdi\n"
+          "mov rbx, rsi\n"
+          "mov ah, al\n"
+          "mov bh, bl\n"
+          "cmp ah, bh\n"
+          "pushf\n"
+          "pop rax\n"
+          "pop rbx\n"
+          "ret\n"
+          ".att_syntax prefix\n");
+}
+extern "C" char __stop_hyda_f_island_flags[];
+
 HYDA_FN(f_hb_write, "hyda_f_hb_write") {
   __asm__(".intel_syntax noprefix\n"
           "mov ah, cl\n"
@@ -1195,6 +1211,7 @@ static Gated gate_lift(const char* name, FnPtr fn, uintptr_t stop) {
 
 struct GatedCall {
   uint64_t ret = 0;
+  uint64_t flags = 0;
   uint32_t status = 0;
   uint64_t steps = 0;
   bool ok = false;
@@ -1329,6 +1346,7 @@ static GatedCall vm_run_gated(Gated& g, uint64_t a0, uint64_t a1, uint64_t a2,
     hyda_vm_restore_simd();
   }
   out.ret = ctx.r[vsl(REG_RAX)];
+  out.flags = ctx.r[vsl(REG_RFLAGS)];
   out.steps = ctx.steps;
   out.ok = true;
   return out;
@@ -2716,6 +2734,41 @@ HYDA_TEST(Sse, avx_lanes, "VEXTRACT/VINSERT/VBROADCAST/VPXOR lanes") {
   }
   ck(std::memcmp(nout, vout, sizeof(nout)) == 0,
      "f_avx_lanes: same YMM lanes and memory image");
+}
+
+// Flags written by an instruction that runs as a native island must reach the
+// VM flag register, otherwise a following branch would differ from native.
+HYDA_TEST(Byte, island_flags, "Flags set by an island reach the VM") {
+  g_rep = &r;
+  Gated g = gate_lift("f_island_flags", f_island_flags,
+                      reinterpret_cast<uintptr_t>(__stop_hyda_f_island_flags));
+  ck(g.ok, std::string("f_island_flags: lift + islands (") + g.error + ")");
+  if (!g.ok) return;
+  ck(g.islands.size() >= 1, "f_island_flags: two high-byte compare stays an island");
+  ck(island_area_exec(), "f_island_flags: island area is executable");
+
+  const std::vector<Case> cases = mk_cases(200, ~0ull, ~0ull, 0, 0);
+  const uint64_t mask = 0x8C5u;
+  int bad = 0;
+  int n = 0;
+  for (const Case& cs : cases) {
+    const uint64_t want = f_island_flags(cs.a, cs.b, 0, 0);
+    const GatedCall got = vm_run_gated(g, cs.a, cs.b, 0, 0, true);
+    ++n;
+    if (!got.ok || got.status != ST_HALT || ((want ^ got.ret) & mask) != 0) {
+      if (bad == 0) {
+        std::printf("     a=%#llx b=%#llx native=%#llx vm=%#llx ctxflags=%#llx status=%u\n",
+                    static_cast<unsigned long long>(cs.a),
+                    static_cast<unsigned long long>(cs.b),
+                    static_cast<unsigned long long>(want),
+                    static_cast<unsigned long long>(got.ret),
+                    static_cast<unsigned long long>(got.flags), got.status);
+      }
+      ++bad;
+    }
+  }
+  ck(bad == 0, "f_island_flags: CF/OF/ZF/SF/PF match native over " +
+                   std::to_string(n) + " inputs");
 }
 
 // Prints decoded/IR counts; never fails.
