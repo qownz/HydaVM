@@ -14,6 +14,9 @@
 #include <sys/mman.h>
 #include <vector>
 
+extern "C" char __stop_bench_loop[];
+extern "C" char __stop_bench_straight[];
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -38,7 +41,6 @@ uint64_t bench_loop(uint64_t, uint64_t) {
           "jnz 1b\n"
           "ret\n .att_syntax prefix\n");
 }
-extern "C" char __stop_bench_loop[];
 
 __attribute__((naked, noinline, section("bench_straight"), aligned(16)))
 uint64_t bench_straight(uint64_t, uint64_t) {
@@ -50,7 +52,6 @@ uint64_t bench_straight(uint64_t, uint64_t) {
           ".endr\n"
           "ret\n .att_syntax prefix\n");
 }
-extern "C" char __stop_bench_straight[];
 
 constexpr size_t kStackBytes = 1u << 20;
 alignas(64) uint8_t g_stack[kStackBytes];
