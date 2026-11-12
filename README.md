@@ -208,6 +208,28 @@ answer: `cpuid`, `rdtsc`, `xgetbv`, `pause`, `fxsave`/`fxrstor` (the
 protector's own host-side helpers), `lock`-prefixed atomics, indirect `call`,
 and a few SSE forms such as `movhps`/`movhlps` and 32-bit `bt`/`bts`.
 
+## Benchmark
+
+`hyda_bench` runs a native body and its virtualized twin on the host and
+reports the best of five rounds:
+
+| Body | Native | VM | Ratio | VM ops | Per op |
+|---|---|---|---|---|---|
+| ALU loop, 64 iterations | 42 ns | 23.2 µs | 550× | 1,672 | 13.9 ns |
+| Straight line, 64 ops | 10.8 ns | 6.2 µs | 575× | 439 | 14.1 ns |
+| Island gate round trip | — | 325 ns | — | — | — |
+
+Intel i3-1005G1, g++ 13.3, `-O3`. The VM op count includes the mutation
+engine's junk and noise, which the protector emits by default.
+
+```bash
+cmake --build build --target hyda_bench && ./build/hyda_bench
+```
+
+The end-to-end test prints the same kind of measurement for a protected binary
+under Wine (unprotected, audit every call, audit amortized), together with the
+audit cost per call.
+
 ## Limitations
 
 - Windows x64 only; MSVC is not supported yet.

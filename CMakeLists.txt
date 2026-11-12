@@ -129,6 +129,10 @@ if(HYDA_BUILD_LIFTER)
   add_executable(hyda_lifter lifter/main.cpp)
   target_link_libraries(hyda_lifter PRIVATE hyda_lift)
 
+  add_executable(hyda_bench tools/bench_vm.cpp)
+  target_link_libraries(hyda_bench PRIVATE hyda_lift)
+  add_test(NAME bench_smoke COMMAND hyda_bench)
+
   add_custom_target(lift_coverage
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/lift_coverage.sh"
             "${CMAKE_BINARY_DIR}"
