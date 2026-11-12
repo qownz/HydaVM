@@ -215,9 +215,9 @@ reports the best of five rounds:
 
 | Body | Native | VM | Ratio | VM ops | Per op |
 |---|---|---|---|---|---|
-| ALU loop, 64 iterations | 42 ns | 23.2 µs | 550× | 1,672 | 13.9 ns |
-| Straight line, 64 ops | 10.8 ns | 6.2 µs | 575× | 439 | 14.1 ns |
-| Island gate round trip | — | 325 ns | — | — | — |
+| ALU loop, 64 iterations | 41 ns | 23.9 µs | ~580× | 1,672 | 14.3 ns |
+| Straight line, 64 ops | 11 ns | 6.4 µs | ~580× | 439 | 14.5 ns |
+| Island gate round trip | — | 330 ns | — | — | — |
 
 Intel i3-1005G1, g++ 13.3, `-O3`. The VM op count includes the mutation
 engine's junk and noise, which the protector emits by default.
