@@ -1137,6 +1137,15 @@ class Lifter {
       case X86_INS_VZEROUPPER:
       case X86_INS_VZEROALL: prog_.add(IRCommand::none(IROp::Nop)); return true;
 
+      case X86_INS_VEXTRACTF128:
+      case X86_INS_VEXTRACTI128: return ins_sse_extract(in);
+      case X86_INS_VINSERTF128:
+      case X86_INS_VINSERTI128:  return ins_sse_insert(in);
+      case X86_INS_VPBROADCASTB: return ins_sse_bcast(in, 0);
+      case X86_INS_VPBROADCASTW: return ins_sse_bcast(in, 1);
+      case X86_INS_VPBROADCASTD: return ins_sse_bcast(in, 2);
+      case X86_INS_VPBROADCASTQ: return ins_sse_bcast(in, 3);
+
       case X86_INS_PUSH:    return ins_push(in);
       case X86_INS_POP:     return ins_pop(in);
       case X86_INS_PUSHFQ:
@@ -1417,6 +1426,87 @@ class Lifter {
     return to_operand(in, i, out);
   }
 
+  bool ins_sse_extract(cs_insn& in) {
+    const cs_x86& x = in.detail->x86;
+    if (x.op_count != 3) return fail("vextractf128: 3 operands expected");
+    IROperand d, s, lane;
+    if (!sse_op(in, 0, &d)) return false;
+    if (!sse_op(in, 1, &s)) return false;
+    if (!sse_op(in, 2, &lane)) return false;
+    if (s.kind != IRKind::Xmm || s.size != 32)
+      return fail("vextractf128: ymm source expected");
+    if (lane.kind != IRKind::Imm) return fail("vextractf128: imm8 lane expected");
+    const uint8_t l = static_cast<uint8_t>(lane.imm) & 1u;
+
+    if (d.kind == IRKind::Xmm) {
+      IRCommand c = IRCommand::none(IROp::SseEx128);
+      c.dst = d;
+      c.src = s;
+      c.sub = l;
+      prog_.add(c);
+      return true;
+    }
+    if (d.kind == IRKind::Mem) {
+      IRCommand c = IRCommand::none(IROp::SseStoreLane);
+      c.dst = d;
+      c.src = s;
+      c.sub = l;
+      prog_.add(c);
+      return true;
+    }
+    return fail("vextractf128: unsupported destination");
+  }
+
+  bool ins_sse_insert(cs_insn& in) {
+    const cs_x86& x = in.detail->x86;
+    if (x.op_count != 4) return fail("vinsertf128: 4 operands expected");
+    IROperand d, s1, s2, lane;
+    if (!sse_op(in, 0, &d)) return false;
+    if (!sse_op(in, 1, &s1)) return false;
+    if (!sse_op(in, 2, &s2)) return false;
+    if (!sse_op(in, 3, &lane)) return false;
+    if (d.kind != IRKind::Xmm || d.size != 32)
+      return fail("vinsertf128: ymm destination expected");
+    if (s1.kind != IRKind::Xmm || s1.size != 32)
+      return fail("vinsertf128: ymm first source expected");
+    if (lane.kind != IRKind::Imm) return fail("vinsertf128: imm8 lane expected");
+    const uint8_t l = static_cast<uint8_t>(lane.imm) & 1u;
+
+    if (s2.kind == IRKind::Mem) {
+      IRCommand c = IRCommand::none(IROp::SseLoadLane);
+      c.dst = d;
+      c.src = s2;
+      c.sub = l;
+      prog_.add(c);
+      return true;
+    }
+    if (s2.kind != IRKind::Xmm) return fail("vinsertf128: source must be xmm or memory");
+    IRCommand c = IRCommand::none(IROp::SseIns128);
+    c.dst = d;
+    c.src = s1;
+    c.aux = IROperand::I(s2.reg);
+    c.sub = l;
+    prog_.add(c);
+    return true;
+  }
+
+  bool ins_sse_bcast(cs_insn& in, uint8_t elem) {
+    const cs_x86& x = in.detail->x86;
+    if (x.op_count != 2) return fail("vbroadcast: 2 operands expected");
+    IROperand d, s;
+    if (!sse_op(in, 0, &d)) return false;
+    if (!sse_op(in, 1, &s)) return false;
+    if (d.kind != IRKind::Xmm || d.size != 32)
+      return fail("vbroadcast: ymm destination expected");
+    if (s.kind != IRKind::Xmm) return fail("vbroadcast: xmm or memory source expected");
+    IRCommand c = IRCommand::none(IROp::SseBcast);
+    c.dst = d;
+    c.src = s;
+    c.sub = elem;
+    prog_.add(c);
+    return true;
+  }
+
   bool ins_sse_mov16(cs_insn& in) {
     const cs_x86& x = in.detail->x86;
     if (x.op_count != 2) return fail("sse mov: 2 operands expected");
@@ -1545,8 +1635,19 @@ class Lifter {
     if (!sse_op(in, 2, &s2)) return false;
     if (d.kind != IRKind::Xmm) return fail("avx target must be XMM");
     if (s1.kind != IRKind::Xmm) return fail("avx src1 must be XMM");
+    if (s2.kind == IRKind::Mem) {
+      if (d.size != 32) return fail("avx memory source needs 256-bit operands");
+      IRCommand c = IRCommand::none(IROp::SseBin3M);
+      c.dst = d;
+      c.src = s1;
+      c.aux = s2;
+      c.size = 32;
+      c.sub = static_cast<uint8_t>(sub);
+      prog_.add(c);
+      return true;
+    }
     if (s2.kind != IRKind::Xmm)
-      return fail("avx src2 must be a register (memory island)");
+      return fail("avx src2 must be a register or memory operand");
     IRCommand c = IRCommand::none(IROp::SseBin3);
     c.dst = d; c.src = s1; c.size = (d.size == 32) ? 32 : 16;
     c.sub = static_cast<uint8_t>(sub);

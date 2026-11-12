@@ -205,9 +205,12 @@ inline IrRW ir_rw_of(const IRCommand& c, bool for_inversion = false) {
     case IROp::SseLoad:
     case IROp::SseBinM:
     case IROp::SseCmpM:
+    case IROp::SseLoadLane:
+    case IROp::SseBin3M:
       ir_rw_read_operand(c.src, &s.rd);
       break;
     case IROp::SseStore:
+    case IROp::SseStoreLane:
       ir_rw_read_operand(c.dst, &s.rd);
       break;
     case IROp::SseBin:
@@ -217,6 +220,9 @@ inline IrRW ir_rw_of(const IRCommand& c, bool for_inversion = false) {
     case IROp::SseShuf:
     case IROp::SseBin3:
     case IROp::SseShift:
+    case IROp::SseEx128:
+    case IROp::SseIns128:
+    case IROp::SseBcast:
       break;
     case IROp::SseCvt:
       ir_rw_read_operand(c.src, &s.rd);

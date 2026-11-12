@@ -142,6 +142,12 @@ constexpr unsigned sig_size(Sig s) {
   X(AVX_ST256, R, R, R, b, d, N, HF(h_avx_st256))                  \
   X(AVX_MOV256,R, R, N, N, N, N, HF(h_avx_mov256))                 \
   X(AVX_BIN3_256, R, R, R, b, N, N, HF(h_avx_bin3_256))            \
+  X(AVX_EX128,   R, R, b, N, N, N, HF(h_avx_ex128))                \
+  X(AVX_INS128,  R, R, R, b, N, N, HF(h_avx_ins128))               \
+  X(AVX_STL128,  R, R, R, b, d, b, HF(h_avx_stl128))               \
+  X(AVX_LDL128,  R, R, R, b, d, b, HF(h_avx_ldl128))               \
+  X(AVX_BCAST,   R, R, b, N, N, N, HF(h_avx_bcast))                \
+  X(AVX_BINM256, R, R, R, b, d, b, HF(h_avx_binm256))             \
   X(MOVZX8,   R, R, N, N, N, N, HF(h_movzx8))                      \
   X(MOVZX16,  R, R, N, N, N, N, HF(h_movzx16))                     \
   X(MOVSX8,   R, R, N, N, N, N, HF(h_movsx8))                      \
@@ -317,7 +323,7 @@ constexpr Sig OP_SIGS[OP_COUNT] = {HYDA_OPCODES(HYDA_MK_SIG)};
 const char* const OP_NAMES[OP_COUNT] = {HYDA_OPCODES(HYDA_MK_NAME)};
 
 constexpr bool is_xmm_op(Op o) {
-  return o >= Op::SSE_LD16 && o <= Op::AVX_BIN3_256;
+  return o >= Op::SSE_LD16 && o <= Op::AVX_BINM256;
 }
 
 constexpr unsigned op_size(Op o) { return sig_size(OP_SIGS[static_cast<size_t>(o)]); }

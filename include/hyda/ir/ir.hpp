@@ -105,6 +105,13 @@ enum class IROp : uint16_t {
 
   SseBin3,
   SseShift,
+
+  SseEx128,
+  SseIns128,
+  SseStoreLane,
+  SseLoadLane,
+  SseBcast,
+  SseBin3M,
 };
 
 enum IRFlag : uint32_t {
@@ -226,7 +233,9 @@ inline IRFlagEffect ir_flag_effect(const IRCommand& c) {
     case IROp::SseLoad: case IROp::SseStore: case IROp::SseMov:
     case IROp::SseBin: case IROp::SseBinM: case IROp::SseUn:
     case IROp::SseCvt: case IROp::SseShuf:
-    case IROp::SseBin3: case IROp::SseShift:
+    case IROp::SseBin3: case IROp::SseShift: case IROp::SseEx128:
+    case IROp::SseIns128: case IROp::SseStoreLane: case IROp::SseLoadLane:
+    case IROp::SseBcast: case IROp::SseBin3M:
       return {0, 0, false};
 
     case IROp::SseCmp: case IROp::SseCmpM:

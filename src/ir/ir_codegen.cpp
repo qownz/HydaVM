@@ -61,6 +61,12 @@ const char* ir_op_name(IROp op) {
     case IROp::SseShuf:    return "SseShuf";
     case IROp::SseBin3:    return "SseBin3";
     case IROp::SseShift:   return "SseShift";
+    case IROp::SseEx128:   return "SseEx128";
+    case IROp::SseIns128:  return "SseIns128";
+    case IROp::SseStoreLane: return "SseStoreLane";
+    case IROp::SseLoadLane:  return "SseLoadLane";
+    case IROp::SseBcast:   return "SseBcast";
+    case IROp::SseBin3M:   return "SseBin3M";
   }
   return "?";
 }
@@ -234,6 +240,13 @@ class Lower {
   void i_rq(Op o, int a, int64_t v) { a_.i_rq(o, a, v); }
   void i_rb(Op o, int a, int v) { a_.i_rb(o, a, v); }
   void i_rrb(Op o, int a, int b, int c) { a_.i_rrb(o, a, b, c); }
+  void i_rrrb(Op o, int a, int b, int c, int d) {
+    a_.raw(o);
+    a_.u8(static_cast<uint8_t>(a));
+    a_.u8(static_cast<uint8_t>(b));
+    a_.u8(static_cast<uint8_t>(c));
+    a_.u8(static_cast<uint8_t>(d));
+  }
   void i_mem(Op o, int reg, const IRMem& m) {
     a_.i_mem(o, reg, m.base < 0 ? static_cast<int>(NO_MEM) : m.base,
              m.index < 0 ? static_cast<int>(NO_MEM) : m.index,
@@ -369,6 +382,12 @@ class Lower {
       case IROp::SseShuf:  emit_sse_shuf(c); break;
       case IROp::SseBin3:  emit_sse_bin3(c); break;
       case IROp::SseShift: emit_sse_shift(c); break;
+      case IROp::SseEx128:     emit_sse_ex128(c); break;
+      case IROp::SseIns128:    emit_sse_ins128(c); break;
+      case IROp::SseStoreLane: emit_sse_store_lane(c); break;
+      case IROp::SseLoadLane:  emit_sse_load_lane(c); break;
+      case IROp::SseBcast:     emit_sse_bcast(c); break;
+      case IROp::SseBin3M:     emit_sse_bin3m(c); break;
 
       case IROp::Jmp:        i_j(Op::JMP, c.label); break;
       case IROp::Jcc:
@@ -827,6 +846,55 @@ class Lower {
       return;
     }
     i_sse_mem(Op::SSE_BINM, c.dst.reg, c.src.mem, c.sub, true);
+  }
+
+  void emit_sse_ex128(const IRCommand& c) {
+    if (!sse_x(c.dst, c) || c.src.kind != IRKind::Xmm) {
+      fail(c, "sse extract: XMM destination and YMM source expected");
+      return;
+    }
+    i_rrb(Op::AVX_EX128, c.dst.reg, c.src.reg, c.sub);
+  }
+
+  void emit_sse_ins128(const IRCommand& c) {
+    if (!sse_x(c.dst, c) || c.src.kind != IRKind::Xmm || c.aux.kind != IRKind::Imm) {
+      fail(c, "sse insert: YMM operands expected");
+      return;
+    }
+    i_rrrb(Op::AVX_INS128, c.dst.reg, c.src.reg, static_cast<int>(c.aux.imm), c.sub);
+  }
+
+  void emit_sse_store_lane(const IRCommand& c) {
+    if (!sse_x(c.src, c) || c.dst.kind != IRKind::Mem) {
+      fail(c, "sse lane store: memory destination and YMM source expected");
+      return;
+    }
+    i_sse_mem(Op::AVX_STL128, c.src.reg, c.dst.mem, c.sub, true);
+  }
+
+  void emit_sse_load_lane(const IRCommand& c) {
+    if (!sse_x(c.dst, c) || c.src.kind != IRKind::Mem) {
+      fail(c, "sse lane load: YMM destination and memory source expected");
+      return;
+    }
+    i_sse_mem(Op::AVX_LDL128, c.dst.reg, c.src.mem, c.sub, true);
+  }
+
+  void emit_sse_bcast(const IRCommand& c) {
+    if (!sse_x(c.dst, c) || c.src.kind != IRKind::Xmm) {
+      fail(c, "sse broadcast: XMM source and YMM destination expected");
+      return;
+    }
+    i_rrb(Op::AVX_BCAST, c.dst.reg, c.src.reg, c.sub);
+  }
+
+  void emit_sse_bin3m(const IRCommand& c) {
+    if (!sse_x(c.dst, c) || !sse_x(c.src, c) || c.aux.kind != IRKind::Mem) {
+      fail(c, "avx memory source: two YMM operands and memory expected");
+      return;
+    }
+    i_rr(Op::AVX_MOV256, c.dst.reg, c.src.reg);
+    i_sse_mem(Op::AVX_BINM256, c.dst.reg, c.aux.mem, c.sub, true);
   }
 
   void emit_sse_un(const IRCommand& c) {

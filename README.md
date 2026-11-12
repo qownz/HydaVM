@@ -170,7 +170,7 @@ tests/      host, lifter, lifting-coverage corpus and Windows PE tests
 | Suite | Checks |
 |---|---|
 | `test_vm` (host differential) | 92,801 |
-| `test_lifter` | 380 |
+| `test_lifter` | 385 |
 | `vm_selftest` (Windows) | 73 |
 | `pe_e2e` | full protect → run → compare |
 
@@ -202,12 +202,11 @@ instructions) lifts down to 20 islands, all of them atomic: 15 `lock xadd` /
 VM, so those stay native on purpose.
 
 Real code is measured by lifting every function of `src/*.cpp` built for
-Windows. At `-O2` that is 449 functions, 36,241 instructions and 132 islands
-(0.36%); at `-Os`, 553 functions and 111 islands (0.45%). What is left is
-mostly instructions where an island is the right answer: `cpuid`, `rdtsc`,
-`xgetbv`, `pause`, `fxsave`/`fxrstor` (the protector's own host-side helpers),
-32-bit `bt`/`bts`, indirect `call`, and AVX-256 forms the lifter's SSE subset
-does not cover yet.
+Windows. At `-O2` that is 455 functions, 36,051 instructions and 64 islands
+(0.18%). What is left is mostly instructions where an island is the right
+answer: `cpuid`, `rdtsc`, `xgetbv`, `pause`, `fxsave`/`fxrstor` (the
+protector's own host-side helpers), `lock`-prefixed atomics, indirect `call`,
+and a few SSE forms such as `movhps`/`movhlps` and 32-bit `bt`/`bts`.
 
 ## Limitations
 

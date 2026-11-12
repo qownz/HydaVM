@@ -646,6 +646,26 @@ HYDA_FN(f_avx256, "hyda_f_avx256") {
 }
 extern "C" char __stop_hyda_f_avx256[];
 
+HYDA_FN(f_avx_lanes, "hyda_f_avx_lanes") {
+  __asm__(".intel_syntax noprefix\n"
+          "vmovups ymm0, [rdi]\n"
+          "vmovups ymm1, [rsi]\n"
+          "vextractf128 xmm2, ymm0, 1\n"
+          "vextractf128 xmmword ptr [rdx], ymm1, 1\n"
+          "vinsertf128 ymm3, ymm0, xmm2, 0\n"
+          "vinsertf128 ymm4, ymm1, xmmword ptr [rsi], 1\n"
+          "vpbroadcastq ymm5, xmm2\n"
+          "vpxor ymm6, ymm0, ymmword ptr [rsi]\n"
+          "vmovups [rdx + 32], ymm3\n"
+          "vmovups [rdx + 64], ymm4\n"
+          "vmovups [rdx + 96], ymm5\n"
+          "vmovups [rdx + 128], ymm6\n"
+          "mov rax, [rdx]\n"
+          "ret\n"
+          ".att_syntax prefix\n");
+}
+extern "C" char __stop_hyda_f_avx_lanes[];
+
 HYDA_FN(f_avx256_gate, "hyda_f_avx256_gate") {
   __asm__(".intel_syntax noprefix\n"
           "vmovups ymm0, [rdi]\n"
@@ -2658,6 +2678,44 @@ HYDA_TEST(String, rep_after_std, "REP after STD copies backwards") {
     }
   }
   ck(bad == 0, "f_repstd: backwards copy matches native");
+}
+
+// 128-bit lane extract/insert, broadcast, 256-bit ALU with a memory operand.
+HYDA_TEST(Sse, avx_lanes, "VEXTRACT/VINSERT/VBROADCAST/VPXOR lanes") {
+  g_rep = &r;
+  alignas(32) static uint8_t abuf[64];
+  alignas(32) static uint8_t bbuf[64];
+  static uint8_t nout[192], vout[192];
+  for (size_t i = 0; i < sizeof(abuf); ++i) {
+    abuf[i] = static_cast<uint8_t>(0x11 + i * 3);
+    bbuf[i] = static_cast<uint8_t>(0x80 + i * 5);
+  }
+  std::memset(nout, 0xAA, sizeof(nout));
+  std::memset(vout, 0xAA, sizeof(vout));
+
+  Gated g = gate_lift("f_avx_lanes", f_avx_lanes,
+                      reinterpret_cast<uintptr_t>(__stop_hyda_f_avx_lanes));
+  ck(g.ok, std::string("f_avx_lanes: lift + bytecode (") + g.error + ")");
+  if (!g.ok) return;
+  ck(g.islands.size() == 0,
+     "f_avx_lanes: expected 0 islands, got " + std::to_string(g.islands.size()));
+
+  const uint64_t want = f_avx_lanes(reinterpret_cast<uint64_t>(abuf),
+                                    reinterpret_cast<uint64_t>(bbuf),
+                                    reinterpret_cast<uint64_t>(nout), 0);
+  const GatedCall got = vm_run_gated(g, reinterpret_cast<uint64_t>(abuf),
+                                     reinterpret_cast<uint64_t>(bbuf),
+                                     reinterpret_cast<uint64_t>(vout), 0, true);
+  ck(got.ok && got.status == ST_HALT, "f_avx_lanes: gated run reached HALT");
+  ck(got.ret == want, "f_avx_lanes: return value matches native");
+  for (size_t i = 0; i < sizeof(nout); ++i) {
+    if (nout[i] == vout[i]) continue;
+    std::printf("     first byte diff at %zu: native=%02x vm=%02x\n", i, nout[i],
+                vout[i]);
+    break;
+  }
+  ck(std::memcmp(nout, vout, sizeof(nout)) == 0,
+     "f_avx_lanes: same YMM lanes and memory image");
 }
 
 // Prints decoded/IR counts; never fails.

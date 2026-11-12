@@ -1493,6 +1493,92 @@ void h_avx_bin3_256(VMContext& c, const uint8_t* o) {
   if (!sse::bin3_256(o[0], o[1], b, o[3])) c.status = ST_FAULT;
 }
 
+void h_avx_ex128(VMContext& c, const uint8_t* o) {
+  if (!sse::reg_ok(c, o[0]) || !sse::reg_ok(c, o[1])) return;
+  const unsigned lane = (o[2] != 0) ? 1u : 0u;
+  sse::V256 v;
+  sse::get256(v, o[1]);
+  sse::V128 r;
+  r.q[0] = v.q[lane * 2];
+  r.q[1] = v.q[lane * 2 + 1];
+  sse::put(o[0], r);
+}
+
+void h_avx_ins128(VMContext& c, const uint8_t* o) {
+  if (!sse::reg_ok(c, o[0]) || !sse::reg_ok(c, o[1]) || !sse::reg_ok(c, o[2])) {
+    return;
+  }
+  const unsigned lane = (o[3] != 0) ? 1u : 0u;
+  sse::V256 a, b;
+  sse::get256(a, o[1]);
+  sse::get256(b, o[2]);
+  a.q[lane * 2] = b.q[0];
+  a.q[lane * 2 + 1] = b.q[1];
+  sse::put256(o[0], a);
+}
+
+void h_avx_stl128(VMContext& c, const uint8_t* o) {
+  if (!sse::reg_ok(c, o[0])) return;
+  const uint64_t a = mem_addr(c, o[1], o[2], rd_i8(o + 3), rd_i32(o + 4));
+  const unsigned lane = (o[8] != 0) ? 1u : 0u;
+  sse::V256 v;
+  sse::get256(v, o[0]);
+  st64(a, v.q[lane * 2]);
+  st64(a + 8, v.q[lane * 2 + 1]);
+}
+
+void h_avx_ldl128(VMContext& c, const uint8_t* o) {
+  if (!sse::reg_ok(c, o[0])) return;
+  const uint64_t a = mem_addr(c, o[1], o[2], rd_i8(o + 3), rd_i32(o + 4));
+  const unsigned lane = (o[8] != 0) ? 1u : 0u;
+  sse::V256 v;
+  sse::get256(v, o[0]);
+  v.q[lane * 2] = ld64(a);
+  v.q[lane * 2 + 1] = ld64(a + 8);
+  sse::put256(o[0], v);
+}
+
+void h_avx_bcast(VMContext& c, const uint8_t* o) {
+  if (!sse::reg_ok(c, o[0]) || !sse::reg_ok(c, o[1])) return;
+  sse::V128 s;
+  sse::get(s, o[1]);
+  sse::V256 v;
+  switch (o[2]) {
+    case 0: {
+      uint8_t x = s.b[0];
+      for (int i = 0; i < 32; ++i) v.b[i] = x;
+      break;
+    }
+    case 1: {
+      uint16_t x = s.w[0];
+      for (int i = 0; i < 16; ++i) v.w[i] = x;
+      break;
+    }
+    case 2: {
+      uint32_t x = s.d[0];
+      for (int i = 0; i < 8; ++i) v.d[i] = x;
+      break;
+    }
+    default: {
+      uint64_t x = s.q[0];
+      for (int i = 0; i < 4; ++i) v.q[i] = x;
+      break;
+    }
+  }
+  sse::put256(o[0], v);
+}
+
+void h_avx_binm256(VMContext& c, const uint8_t* o) {
+  if (!sse::reg_ok(c, o[0])) return;
+  const uint64_t a = mem_addr(c, o[1], o[2], rd_i8(o + 3), rd_i32(o + 4));
+  sse::V256 b;
+  b.q[0] = ld64(a);
+  b.q[1] = ld64(a + 8);
+  b.q[2] = ld64(a + 16);
+  b.q[3] = ld64(a + 24);
+  if (!sse::bin3_256(o[0], o[0], b, o[8])) c.status = ST_FAULT;
+}
+
 #define HYDA_MK_HANDLER(NAME, A, B, C, D, E, F, H) H,
 
 }
