@@ -497,6 +497,10 @@ class Lower {
 
   void emit_xchg(const IRCommand& c) {
     if (!need_rr(c)) return;
+    if (c.size != 8) {
+      fail(c, "XCHG only swaps full 64-bit slots");
+      return;
+    }
     i_rr(Op::XCHG, c.dst.reg, c.src.reg);
   }
 

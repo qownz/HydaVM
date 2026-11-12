@@ -401,6 +401,83 @@ HYDA_FN(f_tzcnt16, "hyda_f_tzcnt16") {
 }
 extern "C" char __stop_hyda_f_tzcnt16[];
 
+HYDA_FN(f_hbyte, "hyda_f_hbyte") {
+  __asm__(".intel_syntax noprefix\n"
+          "push rbx\n"
+          "mov rax, rdi\n"
+          "mov rbx, rsi\n"
+          "mov rdx, rcx\n"
+          "and ah, 0x3f\n"
+          "or dh, 0x80\n"
+          "add ch, bl\n"
+          "xchg al, ah\n"
+          "movzx ecx, ah\n"
+          "add rax, rbx\n"
+          "sub rax, rcx\n"
+          "add rax, rdx\n"
+          "pop rbx\n"
+          "ret\n"
+          ".att_syntax prefix\n");
+}
+extern "C" char __stop_hyda_f_hbyte[];
+
+HYDA_FN(f_hbyte_flags, "hyda_f_hbyte_flags") {
+  __asm__(".intel_syntax noprefix\n" HYDA_SAVE_PTR
+          "push rbx\n"
+          "mov rax, rdi\n"
+          "mov rbx, rsi\n"
+          "mov ah, al\n"
+          "mov bh, bl\n"
+          "cmp ah, bl\n" HYDA_PACK_FLAGS
+          "pop rbx\n" HYDA_OUT
+          "ret\n"
+          ".att_syntax prefix\n");
+}
+extern "C" char __stop_hyda_f_hbyte_flags[];
+
+HYDA_FN(f_hb_write, "hyda_f_hb_write") {
+  __asm__(".intel_syntax noprefix\n"
+          "mov ah, cl\n"
+          "ret\n"
+          ".att_syntax prefix\n");
+}
+extern "C" char __stop_hyda_f_hb_write[];
+
+HYDA_FN(f_repmov, "hyda_f_repmov") {
+  __asm__(".intel_syntax noprefix\n"
+          "mov r8, rdi\n"
+          "mov r9, rsi\n"
+          "mov rcx, rdx\n"
+          "mov al, 0x5a\n"
+          "rep movsb\n"
+          "mov rcx, rdx\n"
+          "rep movsq\n"
+          "mov rcx, rdx\n"
+          "rep stosb\n"
+          "sub rdi, r8\n"
+          "sub rsi, r9\n"
+          "mov rax, rdi\n"
+          "add rax, rsi\n"
+          "add rax, rcx\n"
+          "ret\n"
+          ".att_syntax prefix\n");
+}
+extern "C" char __stop_hyda_f_repmov[];
+
+HYDA_FN(f_repstd, "hyda_f_repstd") {
+  __asm__(".intel_syntax noprefix\n"
+          "mov r8, rdi\n"
+          "mov rcx, rdx\n"
+          "std\n"
+          "rep movsb\n"
+          "cld\n"
+          "sub rdi, r8\n"
+          "mov rax, rdi\n"
+          "ret\n"
+          ".att_syntax prefix\n");
+}
+extern "C" char __stop_hyda_f_repstd[];
+
 #define HYDA_SHIFT_PROBE(NAME, SEC, INSN, SZ)                                 \
   HYDA_FN(NAME, HYDA_STR(SEC)) {                                              \
     __asm__(".intel_syntax noprefix\n" HYDA_SAVE_PTR                                        \
@@ -2460,6 +2537,127 @@ HYDA_TEST(Mutate, engine, "Mutation engine: junk, noise and inverse keep results
                 af.code.size(), ao.code.size());
   }
 }
+}
+
+// AH/BH/CH/DH round-trip through a temporary, including xchg al, ah.
+HYDA_TEST(Byte, high_byte_value, "AH/BH/CH/DH read, write and xchg") {
+  g_rep = &r;
+  run_diff("f_hbyte", f_hbyte, reinterpret_cast<uintptr_t>(__stop_hyda_f_hbyte),
+           mk_cases(200, ~0ull, ~0ull, ~0ull, 0));
+}
+
+// Flags come from the 8-bit operation, not from the write-back.
+HYDA_TEST(Byte, high_byte_flags, "Flags after a high-byte compare") {
+  g_rep = &r;
+  run_diff_out("f_hbyte_flags", f_hbyte_flags,
+               reinterpret_cast<uintptr_t>(__stop_hyda_f_hbyte_flags),
+               mk_cases(200, ~0ull, ~0ull, 0, 0), mask_all5);
+}
+
+// REP MOVS/STOS: bytes copied, pointers advanced and RCX drained like native.
+HYDA_TEST(String, rep_movs_stos, "REP MOVS/STOS match native bytes and advances") {
+  g_rep = &r;
+  static uint8_t src[512], ndst[512], vdst[512];
+  const uintptr_t start = reinterpret_cast<uintptr_t>(f_repmov);
+  LiftOptions opt;
+  opt.base_address = start;
+  opt.name = "f_repmov";
+  const LiftResult lr = lift_x86_64(
+      reinterpret_cast<const uint8_t*>(start),
+      static_cast<size_t>(reinterpret_cast<uintptr_t>(__stop_hyda_f_repmov) - start),
+      opt);
+  ck(lr.ok, std::string("f_repmov: lift (") + lr.error + ")");
+  if (!lr.ok) return;
+  IRProgram prog = lr.prog;
+  ir_wrap_callable(prog);
+  Asm a;
+  const CodegenResult cg = ir_codegen(prog, a);
+  ck(cg.ok, std::string("f_repmov: codegen (") + cg.error + ")");
+  if (!cg.ok) return;
+
+  const uint64_t counts[] = {0, 1, 5, 16};
+  int bad = 0;
+  for (uint64_t n : counts) {
+    for (size_t i = 0; i < sizeof(src); ++i) {
+      src[i] = static_cast<uint8_t>(i * 7 + 1);
+    }
+    std::memset(ndst, 0xAA, sizeof(ndst));
+    std::memset(vdst, 0xAA, sizeof(vdst));
+    const uint64_t want = f_repmov(reinterpret_cast<uint64_t>(ndst),
+                                   reinterpret_cast<uint64_t>(src), n, 0);
+    const VmCall got = vm_run(a, cg.entry_offset, reinterpret_cast<uint64_t>(vdst),
+                              reinterpret_cast<uint64_t>(src), n, 0);
+    if (got.status != ST_HALT || got.ret != want ||
+        std::memcmp(ndst, vdst, sizeof(ndst)) != 0) {
+      if (bad == 0) {
+        std::printf("     n=%llu want=%#llx got=%#llx status=%u\n",
+                    static_cast<unsigned long long>(n),
+                    static_cast<unsigned long long>(want),
+                    static_cast<unsigned long long>(got.ret), got.status);
+        for (size_t i = 0; i < sizeof(ndst); ++i) {
+          if (ndst[i] == vdst[i]) continue;
+          std::printf("     first byte diff at %zu: native=%02x vm=%02x\n", i,
+                      ndst[i], vdst[i]);
+          break;
+        }
+      }
+      ++bad;
+    }
+  }
+  ck(bad == 0, "f_repmov: bytes and advances match native for counts 0/1/5/16");
+}
+
+// STD/CLD update the VM's own DF, so REP after them still walks backwards
+// without ever touching the host direction flag.
+HYDA_TEST(String, rep_after_std, "REP after STD copies backwards") {
+  g_rep = &r;
+  static uint8_t src[64], ndst[64], vdst[64];
+  const uintptr_t start = reinterpret_cast<uintptr_t>(f_repstd);
+  LiftOptions opt;
+  opt.base_address = start;
+  opt.name = "f_repstd";
+  const LiftResult lr = lift_x86_64(
+      reinterpret_cast<const uint8_t*>(start),
+      static_cast<size_t>(reinterpret_cast<uintptr_t>(__stop_hyda_f_repstd) - start),
+      opt);
+  ck(lr.ok, std::string("f_repstd: lift (") + lr.error + ")");
+  if (!lr.ok) return;
+  ck(lr.native_islands == 0, "f_repstd: STD/REP/CLD virtualized");
+  IRProgram prog = lr.prog;
+  ir_wrap_callable(prog);
+  Asm a;
+  const CodegenResult cg = ir_codegen(prog, a);
+  ck(cg.ok, std::string("f_repstd: codegen (") + cg.error + ")");
+  if (!cg.ok) return;
+
+  int bad = 0;
+  for (uint64_t n : {uint64_t{1}, uint64_t{5}, uint64_t{16}}) {
+    for (size_t i = 0; i < sizeof(src); ++i) src[i] = static_cast<uint8_t>(i + 3);
+    std::memset(ndst, 0xAA, sizeof(ndst));
+    std::memset(vdst, 0xAA, sizeof(vdst));
+    const uint64_t want = f_repstd(reinterpret_cast<uint64_t>(ndst + n - 1),
+                                   reinterpret_cast<uint64_t>(src + n - 1), n, 0);
+    const VmCall got = vm_run(a, cg.entry_offset,
+                              reinterpret_cast<uint64_t>(vdst + n - 1),
+                              reinterpret_cast<uint64_t>(src + n - 1), n, 0);
+    if (got.status != ST_HALT || got.ret != want ||
+        std::memcmp(ndst, vdst, sizeof(ndst)) != 0) {
+      if (bad == 0) {
+        std::printf("     n=%llu want=%#llx got=%#llx status=%u\n",
+                    static_cast<unsigned long long>(n),
+                    static_cast<unsigned long long>(want),
+                    static_cast<unsigned long long>(got.ret), got.status);
+        for (size_t i = 0; i < sizeof(ndst); ++i) {
+          if (ndst[i] == vdst[i]) continue;
+          std::printf("     first byte diff at %zu: native=%02x vm=%02x\n", i,
+                      ndst[i], vdst[i]);
+          break;
+        }
+      }
+      ++bad;
+    }
+  }
+  ck(bad == 0, "f_repstd: backwards copy matches native");
 }
 
 // Prints decoded/IR counts; never fails.

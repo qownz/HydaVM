@@ -46,6 +46,16 @@ int vreg_for(x86_reg r) {
   }
 }
 
+bool high_byte_parent(x86_reg r, int* parent) {
+  switch (r) {
+    case X86_REG_AH: *parent = REG_RAX; return true;
+    case X86_REG_BH: *parent = REG_RBX; return true;
+    case X86_REG_CH: *parent = REG_RCX; return true;
+    case X86_REG_DH: *parent = REG_RDX; return true;
+    default: return false;
+  }
+}
+
 const char* reg_reason(x86_reg r) {
   switch (r) {
     case X86_REG_AH: case X86_REG_BH: case X86_REG_CH: case X86_REG_DH:
@@ -332,17 +342,44 @@ class Lifter {
 
   void note_written(const cs_insn& in) {
     if (in.detail == nullptr) return;
+    mark_string_regs(in);
     for (uint8_t i = 0; i < in.detail->regs_write_count; ++i) {
-      const int v = vreg_for(static_cast<x86_reg>(in.detail->regs_write[i]));
-      if (v >= 0) written_ |= 1u << v;
+      mark_written(static_cast<x86_reg>(in.detail->regs_write[i]));
     }
     const cs_x86& x = in.detail->x86;
     for (int i = 0; i < x.op_count; ++i) {
       if (x.operands[i].type != X86_OP_REG) continue;
       if ((x.operands[i].access & CS_AC_WRITE) == 0) continue;
-      const int v = vreg_for(x.operands[i].reg);
-      if (v >= 0) written_ |= 1u << v;
+      mark_written(x.operands[i].reg);
     }
+  }
+
+  void mark_string_regs(const cs_insn& in) {
+    switch (in.id) {
+      case X86_INS_MOVSB: case X86_INS_MOVSW: case X86_INS_MOVSD:
+      case X86_INS_MOVSQ:
+        written_ |= 1u << REG_RSI;
+        written_ |= 1u << REG_RDI;
+        written_ |= 1u << REG_RCX;
+        break;
+      case X86_INS_STOSB: case X86_INS_STOSW: case X86_INS_STOSD:
+      case X86_INS_STOSQ:
+        written_ |= 1u << REG_RDI;
+        written_ |= 1u << REG_RCX;
+        break;
+      default:
+        break;
+    }
+  }
+
+  void mark_written(x86_reg r) {
+    int parent = -1;
+    if (high_byte_parent(r, &parent)) {
+      written_ |= 1u << parent;
+      return;
+    }
+    const int v = vreg_for(r);
+    if (v >= 0) written_ |= 1u << v;
   }
 
   bool emit_all(LiftResult& r) {
@@ -368,6 +405,10 @@ class Lifter {
         fixups_ = fix_mark;
         image_relocs_ = rel_mark;
 
+        hb_parent_ = -1;
+        hb_write_ = false;
+        hb_loaded_ = false;
+
         if (!make_island(in)) {
 
           if (is_trap(in) && !has_known_target_at_or_after(in.address)) break;
@@ -377,6 +418,7 @@ class Lifter {
           continue;
         }
       }
+      flush_high_byte();
       ++r.emitted;
       note_written(in);
     }
@@ -821,6 +863,16 @@ class Lifter {
       case X86_INS_LEA:     return ins_lea(in);
       case X86_INS_XCHG:    return ins_xchg(in);
       case X86_INS_MOVZX:   return ins_extend(in, false);
+      case X86_INS_MOVSB:   return ins_string(in, false, 1);
+      case X86_INS_MOVSW:   return ins_string(in, false, 2);
+      case X86_INS_MOVSQ:   return ins_string(in, false, 8);
+      case X86_INS_STOSB:   return ins_string(in, true, 1);
+      case X86_INS_STOSW:   return ins_string(in, true, 2);
+      case X86_INS_STOSD:   return ins_string(in, true, 4);
+      case X86_INS_STOSQ:   return ins_string(in, true, 8);
+      case X86_INS_CLD:     return ins_dirflag(true);
+      case X86_INS_STD:     return ins_dirflag(false);
+
       case X86_INS_MOVSX:
       case X86_INS_MOVSXD:  return ins_extend(in, true);
 
@@ -876,7 +928,12 @@ class Lifter {
       case X86_INS_MOVDQA:
       case X86_INS_MOVDQU:  return ins_sse_mov16(in);
       case X86_INS_MOVSS:   return ins_sse_mov_scalar(in, 4, kSseMovSS);
-      case X86_INS_MOVSD:   return ins_sse_mov_scalar(in, 8, kSseMovSD);
+      case X86_INS_MOVSD:
+        if (in.detail->x86.op_count >= 1 &&
+            in.detail->x86.operands[0].type == X86_OP_MEM) {
+          return ins_string(in, false, 4);
+        }
+        return ins_sse_mov_scalar(in, 8, kSseMovSD);
       case X86_INS_MOVD:    return ins_sse_mov_gpr(in, 4);
       case X86_INS_MOVQ:    return ins_sse_mov_gpr(in, 8);
 
@@ -1181,6 +1238,28 @@ class Lifter {
     const cs_x86_op& o = in.detail->x86.operands[i];
     switch (o.type) {
       case X86_OP_REG: {
+        int parent = -1;
+        if (high_byte_parent(o.reg, &parent)) {
+          const int v = parent;
+          if (hb_parent_ >= 0 && hb_parent_ != v) return fail("two high-byte operands");
+          const uint32_t access = o.access & (CS_AC_READ | CS_AC_WRITE);
+          const bool rd = access == 0 || (access & CS_AC_READ) != 0;
+          const bool wr = access == 0 || (access & CS_AC_WRITE) != 0;
+          if (rd && !hb_loaded_) {
+            prog_.add(IRCommand::mov(IROperand::R(REG_T1, 8), IROperand::R(v, 8)));
+            IRCommand sh = IRCommand::none(IROp::Shift);
+            sh.sub = static_cast<uint8_t>(ShiftOp::Shr);
+            sh.dst = IROperand::R(REG_T1, 8);
+            sh.src = IROperand::I(8, 1);
+            sh.size = 8;
+            prog_.add(sh);
+            hb_loaded_ = true;
+          }
+          hb_parent_ = v;
+          if (wr) hb_write_ = true;
+          *out = IROperand::R(REG_T1, 1);
+          return true;
+        }
         const int v = vreg_for(o.reg);
         if (v < 0) return fail(reg_reason(o.reg));
         *out = IROperand::R(v, static_cast<uint8_t>(o.size));
@@ -1199,6 +1278,125 @@ class Lifter {
       default:
         return fail("operand type not supported");
     }
+  }
+
+  bool ins_dirflag(bool clear) {
+    prog_.add(IRCommand::none(IROp::Pushf));
+    IRCommand read = IRCommand::none(IROp::Pop);
+    read.dst = IROperand::R(REG_T1, 8);
+    prog_.add(read);
+    prog_.add(IRCommand::alu(clear ? AluOp::And : AluOp::Or,
+                             IROperand::R(REG_T1, 8),
+                             IROperand::I(clear ? static_cast<int64_t>(~0x400ull) : 0x400,
+                                          8)));
+    IRCommand write = IRCommand::none(IROp::Push);
+    write.src = IROperand::R(REG_T1, 8);
+    prog_.add(write);
+    prog_.add(IRCommand::none(IROp::Popf));
+    return true;
+  }
+
+  bool ins_string(cs_insn& in, bool stos, uint8_t size) {
+    const uint8_t p1 = in.detail->x86.prefix[1];
+    if (p1 == X86_PREFIX_CS || p1 == X86_PREFIX_SS || p1 == X86_PREFIX_DS ||
+        p1 == X86_PREFIX_ES || p1 == X86_PREFIX_FS || p1 == X86_PREFIX_GS) {
+      return fail("string op with a segment override stays an island");
+    }
+    const bool rep = in.detail->x86.prefix[0] == 0xF3;
+
+    prog_.add(IRCommand::none(IROp::Pushf));
+    IRCommand read_flags = IRCommand::none(IROp::Pop);
+    read_flags.dst = IROperand::R(REG_T1, 8);
+    prog_.add(read_flags);
+
+    prog_.add(IRCommand::mov(IROperand::R(REG_T2, 8), IROperand::I(size, 8)));
+    prog_.add(IRCommand::mov(IROperand::R(REG_T3, 8),
+                             IROperand::I(-static_cast<int64_t>(size), 8)));
+    IRCommand df = IRCommand::none(IROp::Test);
+    df.dst = IROperand::R(REG_T1, 8);
+    df.src = IROperand::I(0x400, 8);
+    df.size = 8;
+    prog_.add(df);
+    IRCommand pick = IRCommand::none(IROp::Cmov);
+    pick.sub = 0x5;
+    pick.dst = IROperand::R(REG_T2, 8);
+    pick.src = IROperand::R(REG_T3, 8);
+    pick.size = 8;
+    prog_.add(pick);
+    IRCommand restore = IRCommand::none(IROp::Push);
+    restore.src = IROperand::R(REG_T1, 8);
+    prog_.add(restore);
+    prog_.add(IRCommand::none(IROp::Popf));
+
+    const int loop = prog_.new_label();
+    const int done = prog_.new_label();
+
+    prog_.bind(loop);
+    if (rep) {
+      IRCommand count = IRCommand::none(IROp::Test);
+      count.dst = IROperand::R(REG_RCX, 8);
+      count.src = IROperand::R(REG_RCX, 8);
+      count.size = 8;
+      prog_.add(count);
+      IRCommand jz = IRCommand::br(IROp::Jcc, done);
+      jz.sub = 0x4;
+      prog_.add(jz);
+    }
+
+    if (stos) {
+      prog_.add(IRCommand::mov(IROperand::R(REG_T3, size),
+                               IROperand::R(REG_RAX, size)));
+      prog_.add(IRCommand::mov(
+          IROperand::M(IRMem{.base = REG_RDI, .index = -1, .scale = 1, .disp = 0},
+                       size),
+          IROperand::R(REG_T3, size)));
+    } else {
+      prog_.add(IRCommand::mov(
+          IROperand::R(REG_T3, size),
+          IROperand::M(IRMem{.base = REG_RSI, .index = -1, .scale = 1, .disp = 0},
+                       size)));
+      prog_.add(IRCommand::mov(
+          IROperand::M(IRMem{.base = REG_RDI, .index = -1, .scale = 1, .disp = 0},
+                       size),
+          IROperand::R(REG_T3, size)));
+      prog_.add(IRCommand::alu(AluOp::Add, IROperand::R(REG_RSI, 8),
+                               IROperand::R(REG_T2, 8)));
+    }
+    prog_.add(IRCommand::alu(AluOp::Add, IROperand::R(REG_RDI, 8),
+                             IROperand::R(REG_T2, 8)));
+    if (rep) {
+      prog_.add(IRCommand::alu(AluOp::Sub, IROperand::R(REG_RCX, 8),
+                               IROperand::I(1, 8)));
+      prog_.add(IRCommand::br(IROp::Jmp, loop));
+    }
+    prog_.bind(done);
+    return true;
+  }
+
+  void flush_high_byte() {
+    if (hb_parent_ >= 0 && hb_write_) {
+      const int parent = hb_parent_;
+      prog_.add(IRCommand::none(IROp::Pushf));
+      prog_.add(IRCommand::mov(IROperand::R(REG_T2, 8), IROperand::R(REG_T1, 8)));
+      prog_.add(IRCommand::alu(AluOp::And, IROperand::R(REG_T2, 8),
+                               IROperand::I(0xff, 8)));
+      IRCommand sh = IRCommand::none(IROp::Shift);
+      sh.sub = static_cast<uint8_t>(ShiftOp::Shl);
+      sh.dst = IROperand::R(REG_T2, 8);
+      sh.src = IROperand::I(8, 1);
+      sh.size = 8;
+      prog_.add(sh);
+      prog_.add(IRCommand::mov(IROperand::R(REG_T3, 8), IROperand::R(parent, 8)));
+      prog_.add(IRCommand::alu(AluOp::And, IROperand::R(REG_T3, 8),
+                               IROperand::I(static_cast<int64_t>(~0xff00ull), 8)));
+      prog_.add(IRCommand::alu(AluOp::Or, IROperand::R(REG_T3, 8),
+                               IROperand::R(REG_T2, 8)));
+      prog_.add(IRCommand::mov(IROperand::R(parent, 8), IROperand::R(REG_T3, 8)));
+      prog_.add(IRCommand::none(IROp::Popf));
+    }
+    hb_parent_ = -1;
+    hb_write_ = false;
+    hb_loaded_ = false;
   }
 
   bool sse_op(const cs_insn& in, int i, IROperand* out) {
@@ -1512,16 +1710,17 @@ class Lifter {
   }
 
   bool ins_xchg(cs_insn& in) {
-    int a = 0, b = 0;
-    uint8_t as = 0, bs = 0;
-    if (!op_reg(in, 0, &a, &as)) return false;
-    if (!op_reg(in, 1, &b, &bs)) return false;
-    if (as != bs) return fail("xchg: operand sizes differ");
-    IRCommand c = IRCommand::none(IROp::Xchg);
-    c.dst = IROperand::R(a, as);
-    c.src = IROperand::R(b, bs);
-    c.size = as;
-    prog_.add(c);
+    IROperand d, s;
+    if (!to_operand(in, 0, &d)) return false;
+    if (!to_operand(in, 1, &s)) return false;
+    if (d.kind == IRKind::Mem || s.kind == IRKind::Mem)
+      return fail("xchg: memory operand stays an island");
+    if (d.size != s.size) return fail("xchg: operand sizes differ");
+    if (d.reg == s.reg) return true;
+    const uint8_t size = d.size;
+    prog_.add(IRCommand::mov(IROperand::R(REG_T2, size), d));
+    prog_.add(IRCommand::mov(d, s));
+    prog_.add(IRCommand::mov(s, IROperand::R(REG_T2, size)));
     return true;
   }
 
@@ -2033,6 +2232,9 @@ class Lifter {
   size_t fixups_ = 0;
   size_t image_relocs_ = 0;
   uint16_t written_ = 0;
+  int hb_parent_ = -1;
+  bool hb_write_ = false;
+  bool hb_loaded_ = false;
 
   uint64_t img_base() const {
     return opt_.image_base ? opt_.image_base : opt_.base_address;

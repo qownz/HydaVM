@@ -188,20 +188,26 @@ a run names what failed and cases can be selected:
 
 ### Lifting coverage
 
-`tools/lift_coverage.sh` lifts a corpus of realistic functions at `-O0` to
-`-Os` and reports which instructions end up as native islands instead of VM
-bytecode:
+Two scripts measure how much of a corpus reaches the VM as bytecode instead of
+falling back to a native island:
 
 ```bash
-./tools/lift_coverage.sh build
+./tools/lift_coverage.sh build              # synthetic corpus, all -O levels
+./tools/lift_real.sh build x86_64-w64-mingw32-g++ O2   # HydaVM's own sources
 ```
 
-Current corpus: 190 lifts, 3,615 instructions, 22 islands. The remaining
-islands are deliberate: `lock xadd`/`lock cmpxchg`, memory `xchg` and
-`rep stos*` keep their native form because the VM cannot reproduce lock
-semantics or the direction flag. They still execute inside the VM through the
-encrypted call gate. `shld`/`shrd` are virtualized for both register and
-immediate counts; OF after a single-bit double shift is not modeled.
+The synthetic corpus (`tests/coverage_corpus.c`, 190 lifts, 3,615
+instructions) lifts down to 20 islands, all of them atomic: 15 `lock xadd` /
+`lock cmpxchg` and 5 memory `xchg`. Lock semantics cannot be reproduced by the
+VM, so those stay native on purpose.
+
+Real code is measured by lifting every function of `src/*.cpp` built for
+Windows. At `-O2` that is 449 functions, 36,241 instructions and 132 islands
+(0.36%); at `-Os`, 553 functions and 111 islands (0.45%). What is left is
+mostly instructions where an island is the right answer: `cpuid`, `rdtsc`,
+`xgetbv`, `pause`, `fxsave`/`fxrstor` (the protector's own host-side helpers),
+32-bit `bt`/`bts`, indirect `call`, and AVX-256 forms the lifter's SSE subset
+does not cover yet.
 
 ## Limitations
 
@@ -209,6 +215,10 @@ immediate counts; OF after a single-bit double shift is not modeled.
 - Only the x86-64 subset understood by the lifter is virtualized. Anything
   else runs through the native gate as an island, or is reported if it cannot
   be relocated — instructions are never silently miscompiled.
+- An island executes natively, so it does not update the VM's flag state. Code
+  that branches on flags set by an island instruction may therefore differ;
+  `cld`/`std` and `rep movs`/`stos` are virtualized for this reason, and a
+  function that cannot be lifted is skipped and reported rather than patched.
 - Not a generic packer: only functions compiled into `hydafn_*` sections are
   protected.
 - The project is under active development; APIs may change.
