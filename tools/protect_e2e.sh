@@ -31,7 +31,7 @@ run_target() {
 
 # Run the target under Wine when available.
 run_raw() {
-  if [ -n "$WINE" ]; then wine "$1" 2>/dev/null; else "$1" 2>/dev/null; fi
+  if [ -n "$WINE" ]; then wine "$@" 2>/dev/null; else "$@" 2>/dev/null; fi
 }
 
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WINE="";; *) WINE="wine";; esac
@@ -59,7 +59,8 @@ PROT_PROFILE="4d,0,3,4,1,0"
 # Fixed seed so the independent Python verifier derives identical keys.
 PROT_VM_SEED="0x2C7A1B4E9D3F5A86"
 PROT_OUT="$("$PROTECT" "$TARGET" "$PROTECTED" --rebase "$REBASE" \
-  --dispatch-profile "$PROT_PROFILE" --vm-seed "$PROT_VM_SEED")"
+  --dispatch-profile "$PROT_PROFILE" --vm-seed "$PROT_VM_SEED" \
+  --report "$WORK/report.json")"
 echo "$PROT_OUT" | sed 's/^/  | /'
 # The protector prints blob RVAs used by the verifier.
 BLOB0_RVA="$(echo "$PROT_OUT" | sed -n 's/.*(blob \(0x[0-9a-f]*\)).*/\1/p' | head -1)"
@@ -208,11 +209,26 @@ else
 fi
 
 # Bodies erased (E9 + 0xCC), symbols stripped, unwind table rebuilt.
-if python3 "$E2E_DIR/verify_protected.py" "$TARGET" "$PROTECTED" "$BLOB0_RVA" "$SEED" "$ALT" "$OP_COUNT" "$ISLE_BLOB_RVA" "$IMP_BLOB_RVA"
+if python3 "$E2E_DIR/verify_protected.py" "$TARGET" "$PROTECTED" "$BLOB0_RVA" "$SEED" "$ALT" "$OP_COUNT" "$ISLE_BLOB_RVA" "$IMP_BLOB_RVA" "$WORK/report.json"
 then
   ck 1 "native bodies erased + symbols stripped + unwind table"
 else
   ck 0 "native bodies erased + symbols stripped + unwind table"
+fi
+
+# C++ exceptions: functions that throw or catch stay native, so eh output matches.
+BASE_EH="$(run_raw "$TARGET" eh | tr -d '\r')"
+AFTER_EH="$(run_raw "$PROTECTED" eh | tr -d '\r')"
+if [ -n "$BASE_EH" ] && [ "$BASE_EH" = "$AFTER_EH" ]; then
+  ck 1 "C++ exceptions: throw/catch through protected code matches native"
+else
+  ck 0 "C++ exceptions changed after protection"
+  diff <(echo "$BASE_EH") <(echo "$AFTER_EH") | sed 's/^/       /' || true
+fi
+if python3 "$E2E_DIR/check_report.py" "$WORK/report.json" "$TARGET" eh; then
+  ck 1 "functions using C++ exceptions are skipped and reported"
+else
+  ck 0 "exception functions not reported as skipped"
 fi
 
 # Native unwinder round-trip via RtlLookupFunctionEntry.

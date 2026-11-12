@@ -40,6 +40,11 @@ def r2o(pe, rva):
 
 old = load(sys.argv[1])
 new = load(sys.argv[2])
+skipped = set()
+if len(sys.argv) > 9:
+    import json
+    for entry in json.load(open(sys.argv[9])).get('skipped', []):
+        skipped.add(entry['name'])
 nd = new['d']
 ok = True
 
@@ -50,6 +55,14 @@ for s in targets:
     if o is None:
         print(f"  FAIL {s['nm']:16} protected section missing from output"); ok = False; continue
     body = nd[o['ra']:o['ra'] + s['vs']]
+    if s['nm'] in skipped:
+        plain = old['d'][s['ra']:s['ra'] + s['vs']]
+        good = body == plain
+        print(f"  {'OK  ' if good else 'FAIL'} {s['nm']:16} -> {o['nm']:8} body: "
+              f"skipped, left native ({s['vs']} bytes unchanged)" if good else
+              f"  FAIL {s['nm']:16} skipped but body changed")
+        ok = ok and good
+        continue
     good = body[0] == 0xE9 and body[5:s['vs']] == b'\xcc' * (s['vs'] - 5)
     print(f"  {'OK  ' if good else 'FAIL'} {s['nm']:16} -> {o['nm']:8} body: "
           f"{body[:6].hex(' ')} ... ({s['vs']} bytes, {s['vs']-5} bytes erased)")
@@ -96,6 +109,7 @@ else:
         print("  OK   table sorted (unwinder can binary-search)")
     # Old body ranges have no unwind entry (they are a jmp leaf now).
     for s in targets:
+        if s['nm'] in skipped: continue
         hit = [(hex(b), hex(e)) for b, e, _ in ent if b <= s['va'] < e]
         if hit:
             print(f"  FAIL {s['nm']} old body still has an unwind entry: {hit}"); ok = False
@@ -104,6 +118,7 @@ else:
     # Each trampoline needs a valid UNWIND_INFO entry.
     ntr = 0
     for s in targets:
+        if s['nm'] in skipped: continue
         off = r2o(new, s['va'])
         if off is None or nd[off] != 0xE9:
             print(f"  FAIL {s['nm']}: body is not a jmp"); ok = False; continue
@@ -124,7 +139,8 @@ else:
               f"entry {b:#x}-{end:#x}, prolog={prolog}, ALLOC_SMALL frame={frame:#x}")
         ok = ok and good
         ntr += 1
-    print(f"  {'OK  ' if ntr == len(targets) else 'FAIL'} {ntr}/{len(targets)} trampoline "
+    want_ntr = len(targets) - len(skipped)
+    print(f"  {'OK  ' if ntr == want_ntr else 'FAIL'} {ntr}/{want_ntr} trampoline "
           f"unwind entries correct")
 
 if '.hydavm' not in names:

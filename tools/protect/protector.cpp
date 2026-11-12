@@ -646,6 +646,65 @@ int Protector::build_import_table() {
 
 int Protector::lift_functions() {
 
+  auto has_unwind_handler = [this](uint32_t rva) -> bool {
+    const uint32_t ex_rva = pe.dir_rva(3);
+    const uint32_t ex_size = pe.dir_size(3);
+    if (ex_rva == 0 || ex_size == 0 || (ex_size % 12u) != 0) return false;
+    const int off = pe.rva_to_off(ex_rva);
+    if (off < 0) return false;
+    const uint8_t* pd = &pe.data[static_cast<size_t>(off)];
+    for (uint32_t k = 0; k + 12 <= ex_size; k += 12) {
+      if (rd32(pd + k) != rva) continue;
+      const uint32_t unw = rd32(pd + k + 8);
+      if ((unw & 1u) != 0) return false;
+      const int ui = pe.rva_to_off(unw);
+      if (ui < 0) return false;
+      return ((pe.data[static_cast<size_t>(ui)] >> 3) & 0x3u) != 0;
+    }
+    return false;
+  };
+
+  auto thunk_iat = [this](uint64_t target_va) -> uint32_t {
+    if (target_va < pe.image_base) return 0;
+    const uint64_t r64 = target_va - pe.image_base;
+    if (r64 > 0xFFFFFFFFull) return 0;
+    const int off = pe.rva_to_off(static_cast<uint32_t>(r64));
+    if (off < 0) return 0;
+    const size_t at = static_cast<size_t>(off);
+    if (at + 6 > pe.data.size()) return 0;
+    if (pe.data[at] != 0xFF || pe.data[at + 1] != 0x25) return 0;
+    int32_t rel = 0;
+    std::memcpy(&rel, &pe.data[at + 2], 4);
+    const uint64_t iat = target_va + 6 + static_cast<int64_t>(rel);
+    if (iat < pe.image_base) return 0;
+    const uint64_t r = iat - pe.image_base;
+    return r <= 0xFFFFFFFFull ? static_cast<uint32_t>(r) : 0;
+  };
+
+  auto calls_throw_helper = [this, &thunk_iat](const Protected& p) -> bool {
+    for (const hyda::NativeIsland& isl : p.islands) {
+      if (isl.disp_target == 0) continue;
+      uint32_t iat = 0;
+      const int64_t t = static_cast<int64_t>(isl.disp_target) -
+                        static_cast<int64_t>(pe.image_base);
+      if (t >= 0 && t <= 0xFFFFFFFFll) iat = static_cast<uint32_t>(t);
+      for (const ImportInfo& im : imports) {
+        if (im.iat_rva != iat) continue;
+        if (im.func == "__cxa_throw" || im.func == "_CxxThrowException") {
+          return true;
+        }
+      }
+      iat = thunk_iat(isl.disp_target);
+      for (const ImportInfo& im : imports) {
+        if (im.iat_rva != iat) continue;
+        if (im.func == "__cxa_throw" || im.func == "_CxxThrowException") {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
   auto skip = [this](const Section& s, const std::string& why) -> int {
     if (strict_opt) {
       std::printf("error: cannot protect %s: %s\n", s.name.c_str(), why.c_str());
@@ -674,6 +733,10 @@ int Protector::lift_functions() {
     }
     if (size < 5) {
       if (skip(s, "section too small for a jmp rel32") != 0) return 1;
+      continue;
+    }
+    if (has_unwind_handler(s.virt_addr)) {
+      if (skip(s, "unwind info declares an exception handler") != 0) return 1;
       continue;
     }
 
@@ -753,6 +816,11 @@ int Protector::lift_functions() {
       if (it == iat_to_index.end()) continue;
       isl.import_index = it->second + 1;
       ++n_import_refs;
+    }
+
+    if (calls_throw_helper(p)) {
+      if (skip(s, "calls a C++ throw helper") != 0) return 1;
+      continue;
     }
 
     p.preserve = static_cast<uint16_t>(kVolatileMask & ~r.written_regs);

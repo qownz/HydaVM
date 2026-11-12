@@ -44,13 +44,29 @@ if protected & skipped:
     sys.exit("a function is both protected and skipped")
 
 if mode == 'protected':
-    if protected != names:
+    if protected | skipped != names:
+        sys.exit("report does not cover every hydafn_* section")
+    if protected != names - skipped:
         sys.exit("protected set %s != sections %s" % (sorted(protected), sorted(names)))
     for f in report['functions']:
         if f['x86_bytes'] == 0 or f['bytecode_bytes'] == 0:
             sys.exit("empty size for " + f['name'])
         if f['opcodes'] == 0 or not f['encrypted']:
             sys.exit("missing opcode/encryption data for " + f['name'])
+elif mode == 'eh':
+    for want in ('hydafn_throw', 'hydafn_catch'):
+        if want not in skipped:
+            sys.exit(want + " should have been skipped (C++ exceptions)")
+        if want in protected:
+            sys.exit(want + " was virtualized despite using exceptions")
+    reasons = {s['name']: s['reason'] for s in report['skipped']}
+    for name in ('hydafn_throw', 'hydafn_catch'):
+        low = reasons[name].lower()
+        if 'exception' not in low and 'throw' not in low:
+            sys.exit("skip reason for %s does not mention exceptions: %s"
+                     % (name, reasons[name]))
+    if not names - skipped:
+        sys.exit("nothing left to protect")
 elif mode == 'skipped':
     if 'hydafn_mix32' not in skipped:
         sys.exit("hydafn_mix32 not reported as skipped")

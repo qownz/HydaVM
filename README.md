@@ -240,6 +240,10 @@ audit cost per call.
   image (encrypted, but unvirtualized). Flag writes are carried back into the
   VM flag register; a function that cannot be lifted is skipped and reported
   rather than patched.
+- C++ exceptions cannot cross a virtualized body, because its landing pads and
+  cleanup live in the body's own bytecode. Functions whose unwind info declares
+  a handler, or that call `__cxa_throw` / `_CxxThrowException`, are left native
+  and reported as skipped.
 - Not a generic packer: only functions compiled into `hydafn_*` sections are
   protected.
 - The project is under active development; APIs may change.

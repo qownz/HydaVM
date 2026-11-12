@@ -114,6 +114,21 @@ uint64_t fn_load(const uint64_t* p) {
   return p[0];
 }
 
+__attribute__((noinline, section("hydafn_throw"), aligned(16)))
+int fn_throw(int v) {
+  if (v > 0) throw v;
+  return 0;
+}
+
+__attribute__((noinline, section("hydafn_catch"), aligned(16)))
+int fn_catch(int v) {
+  try {
+    return fn_throw(v) + 1;
+  } catch (int e) {
+    return -e;
+  }
+}
+
 __attribute__((noinline, section("hydafn_nest"), aligned(16)))
 uint64_t fn_nest(uint64_t a) {
   const uint64_t m = fn_mid(a);
@@ -341,6 +356,26 @@ int main(int argc, char** argv) {
     volatile uint64_t sink = fn_load(bad);
     (void)sink;
     std::printf("seh: returned without fault\n");
+    return 0;
+  }
+
+  if (argc > 1 && std::strcmp(argv[1], "eh") == 0) {
+    int a = 0;
+    try {
+      a = fn_throw(7);
+      std::printf("eh: no_throw=%d\n", a);
+    } catch (int e) {
+      std::printf("eh: caught=%d\n", e);
+    }
+    try {
+      a = fn_throw(0);
+      std::printf("eh: value=%d\n", a);
+    } catch (int e) {
+      std::printf("eh: unexpected=%d\n", e);
+    }
+    std::printf("eh: inner=%d\n", fn_catch(5));
+    std::printf("eh: inner0=%d\n", fn_catch(0));
+    std::printf("eh: done\n");
     return 0;
   }
 
