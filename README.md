@@ -170,7 +170,7 @@ tests/      host, lifter, lifting-coverage corpus and Windows PE tests
 | Suite | Checks |
 |---|---|
 | `test_vm` (host differential) | 92,801 |
-| `test_lifter` | 367 |
+| `test_lifter` | 380 |
 | `vm_selftest` (Windows) | 73 |
 | `pe_e2e` | full protect → run → compare |
 
