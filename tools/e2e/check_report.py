@@ -46,6 +46,8 @@ if protected & skipped:
 if mode == 'protected':
     if protected | skipped != names:
         sys.exit("report does not cover every hydafn_* section")
+    if report.get('identities', 0) != len(protected):
+        sys.exit("every encrypted function needs its own dispatch identity")
     if protected != names - skipped:
         sys.exit("protected set %s != sections %s" % (sorted(protected), sorted(names)))
     for f in report['functions']:

@@ -39,8 +39,9 @@ ok = True
 # Exempt blob: flag set; its encrypted twin shares almost no bytes.
 if hn_s[5] != 1:
     print(f'  FAIL exempt blob flag wrong: {hn_s[5]:#x}'); ok = False
-elif he_s[5] != 0:
-    print(f'  FAIL non-exempt encrypted blob carries the flag: {he_s[5]:#x}'); ok = False
+elif he_s[5] != 2:
+    print(f'  FAIL non-exempt blob must carry the identity flag: {he_s[5]:#x}')
+    ok = False
 elif hn_s[1] != he_s[1]:
     print('  FAIL exempt blob size differs from the encrypted image'); ok = False
 else:

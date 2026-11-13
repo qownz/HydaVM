@@ -19,6 +19,9 @@ namespace {
 #define HYDA_CTX_STATUS   2048
 #define HYDA_CTX_STEPS    2056
 #define HYDA_CTX_MAXSTEPS 2064
+#define HYDA_CTX_PERM     2104
+#define HYDA_CTX_CRYPTV   2112
+#define HYDA_CTX_CALLST   2116
 
 #define HYDA_NVREG      25
 #define HYDA_NO_MEM     255
@@ -57,6 +60,12 @@ static_assert(offsetof(hyda::VMContext, steps) == HYDA_CTX_STEPS,
               "VMContext.steps offset changed");
 static_assert(offsetof(hyda::VMContext, max_steps) == HYDA_CTX_MAXSTEPS,
               "VMContext.max_steps offset changed");
+static_assert(offsetof(hyda::VMContext, ring_perm) == HYDA_CTX_PERM,
+              "VMContext.ring_perm offset changed");
+static_assert(offsetof(hyda::VMContext, crypt_variant) == HYDA_CTX_CRYPTV,
+              "VMContext.crypt_variant offset changed");
+static_assert(offsetof(hyda::VMContext, call_style) == HYDA_CTX_CALLST,
+              "VMContext.call_style offset changed");
 static_assert(hyda::NVREG == HYDA_NVREG, "NVREG changed");
 static_assert(hyda::NO_MEM == HYDA_NO_MEM, "NO_MEM changed");
 static_assert(hyda::ST_BAD_OPCODE == HYDA_ST_BAD_OPCODE, "ST_BAD_OPCODE changed");
@@ -106,6 +115,7 @@ static_assert(offsetof(hyda::DispatchProfile, crypt_variant) == 20,
 #define HYDA_OFF_K0      144
 #define HYDA_OFF_K1      148
 #define HYDA_OFF_EPOCHK  152
+#define HYDA_OFF_PERM    160
 #define HYDA_FRAME       168
 
 }
@@ -176,13 +186,15 @@ uint32_t hyda_vm_run_asm(hyda::VMContext* , const uint8_t* ,
 
       "lea r14, [rip + hyda_ring_tab]\n"
 
+      "mov rax, [rbx + " HYDA_S(HYDA_CTX_PERM) "]\n"
+      "mov [rsp + " HYDA_S(HYDA_OFF_PERM) "], rax\n"
       "mov eax, dword ptr [rip + g_dispatch_profile + 4]\n"
       "mov dword ptr [rsp + " HYDA_S(HYDA_OFF_KEYVAR) "], eax\n"
       "mov eax, dword ptr [rip + g_dispatch_profile + 12]\n"
       "mov dword ptr [rsp + " HYDA_S(HYDA_OFF_SHIFT) "], eax\n"
-      "mov eax, dword ptr [rip + g_dispatch_profile + 16]\n"
+      "mov eax, dword ptr [rbx + " HYDA_S(HYDA_CTX_CALLST) "]\n"
       "mov dword ptr [rsp + " HYDA_S(HYDA_OFF_CALLST) "], eax\n"
-      "mov eax, dword ptr [rip + g_dispatch_profile + 20]\n"
+      "mov eax, dword ptr [rbx + " HYDA_S(HYDA_CTX_CRYPTV) "]\n"
       "mov dword ptr [rsp + " HYDA_S(HYDA_OFF_CRYPTV) "], eax\n"
 
       "mov eax, dword ptr [rsp + " HYDA_S(HYDA_OFF_CRYPTV) "]\n"
@@ -394,9 +406,11 @@ uint32_t hyda_vm_run_asm(hyda::VMContext* , const uint8_t* ,
 
       "mov rdx, r8\n"
       "shl rdx, 11\n"
+      "mov r9, [rsp + " HYDA_S(HYDA_OFF_PERM) "]\n"
+      "movzx eax, word ptr [r9 + rcx*2]\n"
       "lea r9, [rip + hyda_ring_perm]\n"
       "add rdx, r9\n"
-      "movzx r10d, word ptr [rdx + rcx*2]\n"
+      "movzx r10d, word ptr [rdx + rax*2]\n"
       "mov [rsp + " HYDA_S(HYDA_OFF_IDX) "], r10\n"
 
       "mov rbp, [rsp + r8*8 + " HYDA_S(HYDA_OFF_BASE) "]\n"

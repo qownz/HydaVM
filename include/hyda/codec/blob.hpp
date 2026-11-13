@@ -12,8 +12,10 @@ inline uint32_t blob_magic() { return seed_magic(0x424D5648ull); }
 constexpr uint32_t HYDA_BLOB_VERSION = 4u;
 
 constexpr uint32_t HYDA_BLOB_NO_CRYPT = 1u << 0;
+constexpr uint32_t HYDA_BLOB_IDENTITY = 1u << 1;
 
-constexpr uint32_t HYDA_BLOB_KNOWN_FLAGS = HYDA_BLOB_NO_CRYPT;
+constexpr uint32_t HYDA_BLOB_KNOWN_FLAGS =
+    HYDA_BLOB_NO_CRYPT | HYDA_BLOB_IDENTITY;
 
 constexpr uint32_t HYDA_BLOB_MAX_CODE = 1u << 20;
 
@@ -37,6 +39,10 @@ static_assert(sizeof(BlobHeader) == 48, "blob header must be 48 bytes");
 
 inline bool blob_no_crypt(const BlobHeader& h) {
   return (h.flags & HYDA_BLOB_NO_CRYPT) != 0;
+}
+
+inline bool blob_identity(const BlobHeader& h) {
+  return (h.flags & HYDA_BLOB_IDENTITY) != 0;
 }
 
 inline bool blob_header_check(const BlobHeader& h) {

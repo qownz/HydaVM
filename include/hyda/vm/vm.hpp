@@ -18,6 +18,9 @@ extern "C" uint32_t hyda_vm_run_asm(VMContext* ctx, const uint8_t* code,
 
 extern "C" const uint8_t hyda_sbox[256];
 
+// Slot numbering of one function; key 0 is the canonical mapping.
+const uint16_t* dispatch_perm_for(uint64_t key);
+
 uint32_t install_handler_shards(const HandlerShardDesc* descs, unsigned count,
                                 uint64_t* arena_lo = nullptr,
                                 uint64_t* arena_hi = nullptr);

@@ -11,6 +11,7 @@
 #include <cpuid.h>
 #endif
 #include "hyda/core/thread.hpp"
+#include "hyda/vm/identity.hpp"
 #include "hyda/vm/vm.hpp"
 
 #include <atomic>
@@ -674,6 +675,13 @@ HYDA_ENTRY uint64_t hyda_vm_dispatch(uint64_t a0, uint64_t a1, uint64_t a2,
 
   const uint64_t crypt_key =
       hyda::blob_no_crypt(*h) ? 0 : hyda::crypt_key_for(blob_rva);
+
+  if (hyda::blob_identity(*h)) {
+    const hyda::DispatchIdentity id = hyda::dispatch_identity_for(crypt_key);
+    ctx.ring_perm = hyda::dispatch_perm_for(crypt_key);
+    ctx.crypt_variant = id.crypt_variant;
+    ctx.call_style = id.call_style;
+  }
 
   const uint64_t shard_mask = h->shard_mask;
   shards_acquire(shard_mask);

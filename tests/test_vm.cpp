@@ -10,6 +10,7 @@
 #include "hyda/vm/dispatch.hpp"
 #include "hyda/vm/dispatch_ring.hpp"
 #include "hyda/vm/handlers.hpp"
+#include "hyda/vm/identity.hpp"
 #include "hyda/codec/hydak.hpp"
 #include "hyda/guard/audit.hpp"
 #include "hyda/codec/datblob.hpp"
@@ -3848,6 +3849,60 @@ HYDA_TEST(Mutate, fusion, "Fused pairs match the unfused results") {
 HYDA_TEST(Dispatch, vreg_perm, "Register slot permutation is a bijection") {
   g_rep = &r;
   test_vreg_perm();
+}
+
+// Each blob key selects its own slot numbering; nothing is stored to read.
+HYDA_TEST(Dispatch, identity_perm, "Per-function slot map is a bijection") {
+  g_rep = &r;
+  uint16_t perm[kSlotCount];
+  uint16_t inv[kSlotCount];
+  bool seen[kSlotCount];
+  for (uint64_t key : {0x1111ull, 0x9E3779B97F4A7C15ull, 0xDEADBEEFull,
+                       0x8F3A5C71D2E6B904ull}) {
+    identity_slot_perm(perm, key);
+    identity_slot_perm_inv(inv, key);
+    std::memset(seen, 0, sizeof(seen));
+    bool bijection = true;
+    for (uint32_t i = 0; i < kSlotCount; ++i) {
+      if (perm[i] >= kSlotCount || seen[perm[i]]) bijection = false;
+      else seen[perm[i]] = true;
+      if (inv[perm[i]] != i) bijection = false;
+    }
+    HYDA_CHECK(r, bijection);
+  }
+}
+
+// A permuted blob only runs with the identity its key selects.
+HYDA_TEST(Dispatch, identity_run, "Permuted slots execute through the VM") {
+  g_rep = &r;
+  const IRProgram base = mutate_sample_prog();
+  uint64_t want = 0;
+  HYDA_EQ(r, run_ir_prog(base, 7, &want), static_cast<uint32_t>(ST_HALT));
+
+  IRProgram p = base;
+  ir_wrap_callable(p);
+  Asm a;
+  const CodegenResult cg = ir_codegen(p, a);
+  HYDA_CHECK(r, cg.ok);
+  if (!cg.ok) return;
+
+  const uint64_t key = crypt_key_for(0x1234u);
+  const DispatchIdentity id = dispatch_identity_for(key);
+  uint16_t perm[kSlotCount];
+  identity_slot_perm(perm, key);
+  crypt_operands_encrypt_v(a.code.data(), a.code.size(), key, id.crypt_variant,
+                           perm);
+
+  VMContext ctx;
+  reset(ctx);
+  ctx.ring_perm = dispatch_perm_for(key);
+  ctx.crypt_variant = id.crypt_variant;
+  ctx.call_style = id.call_style;
+  ctx.r[vsl(REG_RAX)] = 7;
+  vm_set_entry(ctx, cg.entry_offset);
+  HYDA_EQ(r, vm_exec(ctx, a.code.data(), a.code.size(), key),
+          static_cast<uint32_t>(ST_HALT));
+  HYDA_EQ(r, ctx.r[vsl(REG_RAX)], want);
 }
 
 // Prints a sample program; never fails.

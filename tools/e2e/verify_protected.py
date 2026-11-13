@@ -450,15 +450,16 @@ if not sys.argv[3]:
 blob0 = h['ra'] + (int(sys.argv[3], 16) - h['va'])
 # BlobHeader: 48 bytes (magic, size, entry, crc, version, flags, islands, imports, shard mask).
 HYDA_BLOB_VERSION = 4
-HYDA_BLOB_NO_CRYPT = 1
+HYDA_BLOB_IDENTITY = 2
 magic, cs, entry, crc, ver, flags, isrva, icount, ispan, imp_tab_rva, resv, \
     resv2 = struct.unpack_from('<IIIIIIIIIIII', nd, blob0)
 if magic != BLOB_MAGIC:
     print(f'  FAIL blob header not found (magic={magic:#x})'); ok = False
 elif ver != HYDA_BLOB_VERSION:
     print(f'  FAIL unexpected blob version: {ver}'); ok = False
-elif flags != 0:
-    print(f'  FAIL default image blob flags must be zero: {flags:#x}'); ok = False
+elif flags != HYDA_BLOB_IDENTITY:
+    print(f'  FAIL encrypted blob must carry the per-function identity flag: '
+          f'{flags:#x}'); ok = False
 elif (isrva == 0) != (icount == 0):
     print(f'  FAIL island area inconsistent: rva={isrva:#x} count={icount}'); ok = False
 else:

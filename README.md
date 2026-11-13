@@ -139,10 +139,13 @@ native x86-64 ──capstone──▶ IR ──codegen──▶ encrypted VM byt
 1. The protector finds `hydafn_*` sections and lifts each function to IR.
 2. IR is compiled to slot-based bytecode; operands are encrypted per
    instruction.
-3. Handler code is split into shards and hidden inside data sections.
-4. At load time the entry stub installs the handler table, verifies sections
+3. Each function gets its own dispatch identity: slot numbering, crypt
+   variant and call style are derived from that blob's key, so nothing about
+   one function's dialect is stored for another's.
+4. Handler code is split into shards and hidden inside data sections.
+5. At load time the entry stub installs the handler table, verifies sections
    and decrypts bytecode on demand.
-5. A fault bridge maps VM faults back into native SEH, preserving normal
+6. A fault bridge maps VM faults back into native SEH, preserving normal
    exception semantics.
 
 ## Project layout

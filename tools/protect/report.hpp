@@ -38,6 +38,7 @@ struct Report {
   uint32_t prof_shift = 0;
   uint32_t prof_call = 0;
   uint32_t prof_crypt = 0;
+  uint32_t identities = 0;
   std::vector<ReportFn> functions;
   std::vector<ReportSkip> skipped;
 };

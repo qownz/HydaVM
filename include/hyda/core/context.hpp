@@ -20,6 +20,10 @@ struct VMContext {
   uint64_t stack_limit;
 
   uint8_t save_flags = 1;
+
+  const uint16_t* ring_perm = nullptr;
+  uint32_t crypt_variant = 0;
+  uint32_t call_style = 0;
 };
 
 inline void vm_set_stack(VMContext& c, uint64_t base, uint64_t limit) {
@@ -48,6 +52,9 @@ inline void vm_init(VMContext& c, uint64_t guest_rsp) {
   c.stack_base = 0;
   c.stack_limit = 0;
   c.save_flags = 1;
+  c.ring_perm = nullptr;
+  c.crypt_variant = 0;
+  c.call_style = 0;
 }
 
 inline bool flag(const VMContext& c, unsigned bit) {

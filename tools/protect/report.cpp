@@ -58,6 +58,7 @@ bool write_report(const Report& r, const std::string& path, std::string* err) {
                "\"shift\": %u, \"call\": %u, \"crypt\": %u},\n",
                r.prof_mask, r.prof_key, r.prof_base, r.prof_shift, r.prof_call,
                r.prof_crypt);
+  std::fprintf(f, "  \"identities\": %u,\n", r.identities);
 
   std::fprintf(f, "  \"functions\": [\n");
   for (size_t i = 0; i < r.functions.size(); ++i) {

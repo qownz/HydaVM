@@ -1,5 +1,7 @@
 #include "protector.hpp"
 
+#include "hyda/vm/identity.hpp"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -1258,13 +1260,15 @@ int Protector::apply_crypt() {
       }
 
       const std::vector<uint8_t> plain = p.code;
-      hyda::crypt_operands_encrypt_v(p.code.data(), p.code.size(),
-                                     hyda::crypt_key_for(p.blob_rva),
-                                     prof_crypt);
+      const uint64_t key = hyda::crypt_key_for(p.blob_rva);
+      const hyda::DispatchIdentity id = hyda::dispatch_identity_for(key);
+      uint16_t perm[hyda::kSlotCount];
+      hyda::identity_slot_perm(perm, key);
+      hyda::crypt_operands_encrypt_v(p.code.data(), p.code.size(), key,
+                                     id.crypt_variant, perm);
       std::vector<uint8_t> check = p.code;
-      hyda::crypt_operands_decrypt_v(check.data(), check.size(),
-                                     hyda::crypt_key_for(p.blob_rva),
-                                     prof_crypt);
+      hyda::crypt_operands_decrypt_v(check.data(), check.size(), key,
+                                     id.crypt_variant, perm);
       if (check != plain) {
         std::printf("error: %s codec self-check failed (blob rva %#x): "
                     "encrypt/decrypt mismatch\n",
@@ -1277,6 +1281,8 @@ int Protector::apply_crypt() {
                   "operand encryption ON + chained "
                   "(%zu blobs; per-blob key, per-insn stream)\n",
                   prot.size());
+      std::printf("  dispatch id  : per function (own slot numbering + crypt "
+                  "variant, derived from the blob key)\n");
     } else {
       std::printf("  encryption   : opcode codec v2 + operand encryption "
                   "on %zu/%zu blobs; %zu plaintext "
@@ -1318,6 +1324,7 @@ int Protector::build_tramp_blob() {
     h.version = hyda::HYDA_BLOB_VERSION;
     h.flags = 0;
     if (p.no_crypt) h.flags |= hyda::HYDA_BLOB_NO_CRYPT;
+    else h.flags |= hyda::HYDA_BLOB_IDENTITY;
 
     h.import_tab_rva = import_tab_rva;
     h.islands_rva = p.islands_rva;
@@ -1908,6 +1915,10 @@ void Protector::build_report() {
   report.prof_shift = prof_shift;
   report.prof_call = prof_call;
   report.prof_crypt = prof_crypt;
+  report.identities = 0;
+  for (const Protected& p : prot) {
+    if (!p.no_crypt) ++report.identities;
+  }
   report.skipped = skipped;
 
   for (const Protected& p : prot) {

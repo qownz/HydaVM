@@ -58,30 +58,41 @@ inline uint64_t codec_stream_key(uint64_t key, uint32_t variant) {
 
 template <bool kEncrypt>
 inline void crypt_operands_impl(uint8_t* code, size_t size, uint64_t key,
-                               uint32_t variant = 0) {
+                               uint32_t variant = 0,
+                               const uint16_t* slot_perm = nullptr) {
   if (key == 0 || code == nullptr) return;
   const OpcodeMap& m = opcode_map();
   CodecKey ck;
   codec_init(ck, codec_stream_key(key, variant));
   uint32_t rnd = codec_rnd_seed(codec_stream_key(key, variant));
 
+  uint16_t inv[kSlotCount];
+  if (slot_perm != nullptr) {
+    for (uint32_t i = 0; i < kSlotCount; ++i) {
+      inv[slot_perm[i]] = static_cast<uint16_t>(i);
+    }
+  }
+
   size_t vip = 0;
   while (vip + kHeaderBytes <= size) {
 
     const uint64_t z = crypt_mix(vip, key);
 
-    uint16_t slot;
+    uint16_t stored = 0;
+    uint16_t slot = 0;
     if (kEncrypt) {
       slot = static_cast<uint16_t>(code[vip] |
                                    (static_cast<uint16_t>(code[vip + 1]) << 8));
       if (m.op_of_slot[slot] == BAD_SLOT) break;
+      stored = slot_perm != nullptr ? inv[slot] : slot;
       uint8_t h0 = 0;
       uint8_t h1 = 0;
-      codec_encode(ck, slot, z, rnd, &h0, &h1);
+      codec_encode(ck, stored, z, rnd, &h0, &h1);
       code[vip] = h0;
       code[vip + 1] = h1;
     } else {
-      slot = codec_decode(ck, code[vip], code[vip + 1], z);
+      stored = codec_decode(ck, code[vip], code[vip + 1], z);
+      slot = slot_perm != nullptr ? slot_perm[stored] : stored;
       if (m.op_of_slot[slot] == BAD_SLOT) break;
       code[vip] = static_cast<uint8_t>(slot & 0xFFu);
       code[vip + 1] = static_cast<uint8_t>(slot >> 8);
@@ -91,7 +102,7 @@ inline void crypt_operands_impl(uint8_t* code, size_t size, uint64_t key,
     const unsigned opsz = op_size(static_cast<Op>(op));
     if (vip + kHeaderBytes + opsz > size) break;
 
-    const uint64_t zs = z ^ (static_cast<uint64_t>(slot) * 0x27D4EB2Du);
+    const uint64_t zs = z ^ (static_cast<uint64_t>(stored) * 0x27D4EB2Du);
     uint8_t prev = 0;
     for (unsigned i = 0; i < opsz; ++i) {
       const uint8_t k = crypt_ks_byte_v(zs, i, variant);
@@ -116,17 +127,20 @@ inline void crypt_operands_encrypt(uint8_t* code, size_t size, uint64_t key) {
 }
 
 inline void crypt_operands_encrypt_v(uint8_t* code, size_t size, uint64_t key,
-                                    uint32_t variant) {
-  detail::crypt_operands_impl<true>(code, size, key, variant);
+                                    uint32_t variant,
+                                    const uint16_t* slot_perm = nullptr) {
+  detail::crypt_operands_impl<true>(code, size, key, variant, slot_perm);
 }
 
 inline void crypt_operands_decrypt_v(uint8_t* code, size_t size, uint64_t key,
-                                    uint32_t variant) {
-  detail::crypt_operands_impl<false>(code, size, key, variant);
+                                    uint32_t variant,
+                                    const uint16_t* slot_perm = nullptr) {
+  detail::crypt_operands_impl<false>(code, size, key, variant, slot_perm);
 }
 
-inline void crypt_operands_decrypt(uint8_t* code, size_t size, uint64_t key) {
-  detail::crypt_operands_impl<false>(code, size, key, 0);
+inline void crypt_operands_decrypt(uint8_t* code, size_t size, uint64_t key,
+                                   const uint16_t* slot_perm = nullptr) {
+  detail::crypt_operands_impl<false>(code, size, key, 0, slot_perm);
 }
 
 }
